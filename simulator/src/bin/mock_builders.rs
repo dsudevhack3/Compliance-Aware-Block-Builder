@@ -73,8 +73,8 @@ async fn main() -> eyre::Result<()> {
         .build()?;
 
     // Profile B1: Clean builder (reference: simulator default clean accounts) with 20 transactions, 2.0 ETH
-    let clean_sender = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
-    let clean_recipient = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
+    let clean_sender = "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f";
+    let clean_recipient = "0xa0ee7a142d267c1f36714e4a8f75612f20a79720";
     let mut b1_txs = Vec::new();
     for idx in 1..=20 {
         b1_txs.push(TxItem {

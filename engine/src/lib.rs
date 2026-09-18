@@ -885,6 +885,9 @@ impl ComplianceDataProvider for LiveComplianceBackend {
         address: &str,
         max_hops: i32,
     ) -> Result<Option<i32>, EngineError> {
+        if max_hops <= 0 {
+            return Ok(None);
+        }
         let address_lower = address.to_lowercase();
         let res = Self::retry_with_backoff::<_, _, Option<i32>, String>(
             3,
@@ -1160,8 +1163,33 @@ pub async fn admin_refresh_handler(
     }
 }
 
-pub async fn health_handler() -> &'static str {
-    "OK"
+pub async fn health_handler(
+    State(provider): State<Arc<dyn ComplianceDataProvider>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let pg_ok = provider.get_active_policy(None).await.is_ok();
+    let redis_ok = provider
+        .is_sanctioned("0x0000000000000000000000000000000000000000")
+        .await
+        .is_ok();
+
+    if pg_ok && redis_ok {
+        Ok(Json(serde_json::json!({
+            "status": "ok",
+            "service": "compliance-engine",
+            "postgres": "healthy",
+            "redis": "healthy"
+        })))
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "degraded",
+                "service": "compliance-engine",
+                "postgres": if pg_ok { "healthy" } else { "unhealthy" },
+                "redis": if redis_ok { "healthy" } else { "unhealthy" }
+            })),
+        ))
+    }
 }
 
 pub fn create_app(provider: Arc<dyn ComplianceDataProvider>) -> Router {
@@ -1299,4 +1327,64 @@ mod tests {
         assert_eq!(root1, root2);
         assert_eq!(root1.len(), 64);
     }
+
+    #[tokio::test]
+    async fn test_max_hops_zero() {
+        let mock = MockComplianceBackend::new();
+        let addr = "0x2222222222222222222222222222222222222222";
+        mock.multihop.write().unwrap().insert(addr.to_string(), 1);
+
+        let mut policy = CompliancePolicy::default();
+        policy.policy_id = "test-zero-hop".to_string();
+        policy.parameters.max_hop_distance = 0;
+        mock.policies
+            .write()
+            .unwrap()
+            .insert("test-zero-hop".to_string(), policy);
+        mock.set_active_policy("test-zero-hop");
+
+        let req = ScreenRequest {
+            tx_hash: "0xabc001".to_string(),
+            sender: "0x1111111111111111111111111111111111111111".to_string(),
+            recipient: Some(addr.to_string()),
+            value: Some(100),
+            policy: Some("test-zero-hop".to_string()),
+            bundle_id: None,
+            value_usd: None,
+            vasp_metadata: None,
+        };
+
+        let res = evaluate_transaction(&mock, &req).await.unwrap();
+        assert_eq!(res.decision, "ALLOW");
+        assert_eq!(res.exposure_hop_distance, None);
+        assert!(!res.reasons.iter().any(|r| r.contains("INDIRECT_RECIPIENT_EXPOSURE")));
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_tx_hash_append_only() {
+        let mock = MockComplianceBackend::new();
+        let record = DecisionRecord {
+            tx_hash: "0xduplicate_hash_test".to_string(),
+            sender: "0x1111111111111111111111111111111111111111".to_string(),
+            recipient: Some("0x2222222222222222222222222222222222222222".to_string()),
+            decision: "ALLOW".to_string(),
+            risk_score: 0,
+            reasons: vec![],
+            counterparty_entity_type: None,
+            exposure_hop_distance: None,
+            policy_version: "v1".to_string(),
+            integrity_hash: Some("hash1".to_string()),
+            bundle_id: None,
+        };
+
+        assert!(mock.record_decision(&record).await.is_ok());
+        assert!(mock.record_decision(&record).await.is_ok());
+
+        let decisions = mock.decisions.read().unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].tx_hash, "0xduplicate_hash_test");
+        assert_eq!(decisions[1].tx_hash, "0xduplicate_hash_test");
+    }
 }
+
+

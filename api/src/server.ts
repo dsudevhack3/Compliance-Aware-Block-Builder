@@ -17,9 +17,14 @@ const { Pool } = pg;
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL || 'postgres://localhost:5432/compliance_builder',
+    max: 20,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 30000,
 });
 
-const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8000/explain';
+const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8001/explain';
+const RELAY_URL = process.env.RELAY_URL || 'http://127.0.0.1:3003';
+
 
 const fastify = Fastify({ logger: true });
 
@@ -117,6 +122,28 @@ function broadcast(data: unknown) {
         }
     }
 }
+
+async function getHealthStatus(reply: any) {
+    try {
+        await pool.query('SELECT 1');
+        return {
+            status: 'ok',
+            service: 'compliance-api',
+            database: 'connected',
+            pool: {
+                total: pool.totalCount,
+                idle: pool.idleCount,
+                waiting: pool.waitingCount,
+            },
+        };
+    } catch (err: any) {
+        reply.status(503);
+        return { status: 'degraded', database: 'error', error: err.message };
+    }
+}
+
+fastify.get('/health', async (request, reply) => getHealthStatus(reply));
+fastify.get('/api/health', async (request, reply) => getHealthStatus(reply));
 
 fastify.get('/api/decisions', async (request, reply) => {
     const result = await pool.query(
@@ -244,15 +271,139 @@ fastify.post('/api/policy/activate', async (request, reply) => {
     }
 });
 
+async function proxyRelayRequest(request: any, reply: any, path: string, method: string) {
+    try {
+        const url = `${RELAY_URL}${path}`;
+        const headers: Record<string, string> = {};
+        if (request.headers['content-type']) {
+            headers['content-type'] = request.headers['content-type'];
+        }
+        if (request.headers['x-proposer-signature']) {
+            headers['x-proposer-signature'] = request.headers['x-proposer-signature'];
+        }
+        const body = (method === 'POST' || method === 'PUT') ? JSON.stringify(request.body) : undefined;
+        const res = await fetch(url, {
+            method,
+            headers,
+            body,
+            signal: AbortSignal.timeout(5000),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        reply.status(res.status);
+        if (contentType.includes('application/json')) {
+            const data = await res.json();
+            return data;
+        } else {
+            const text = await res.text();
+            return text;
+        }
+    } catch (err: any) {
+        reply.status(502);
+        return { error: `Relay proxy error: ${err.message || err}` };
+    }
+}
+
+async function proxyBestHeader(request: any, reply: any) {
+    const queryStr = new URLSearchParams(request.query as any).toString();
+    const path = `/relay/best_header${queryStr ? `?${queryStr}` : ''}`;
+    try {
+        const res = await fetch(`${RELAY_URL}${path}`, { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        reply.status(res.status);
+        if (res.ok) {
+            broadcast({ type: 'winner_selected', data });
+        }
+        return data;
+    } catch (err: any) {
+        reply.status(502);
+        return { error: `Relay proxy error: ${err.message || err}` };
+    }
+}
+
+async function proxyExportZip(slot: string | number, reply: any) {
+    try {
+        const res = await fetch(`${RELAY_URL}/relay/slot/${slot}/export`, {
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) {
+            reply.status(res.status);
+            const err = await res.text();
+            return { error: `Relay export failed: ${err}` };
+        }
+        const buffer = await res.arrayBuffer();
+        reply
+            .header('Content-Type', 'application/zip')
+            .header('Content-Disposition', `attachment; filename="audit-slot-${slot}.zip"`)
+            .send(Buffer.from(buffer));
+    } catch (err: any) {
+        reply.status(502);
+        return { error: `Relay export proxy error: ${err.message || err}` };
+    }
+}
+
+async function queryRelayBids(slot?: any) {
+    const query = slot
+        ? `SELECT id, slot, builder_id, block_hash, fee_recipient, value_wei, verdict, reasons, ai_summary, created_at
+           FROM relay_bids
+           WHERE slot = $1
+           ORDER BY created_at DESC
+           LIMIT 100`
+        : `SELECT id, slot, builder_id, block_hash, fee_recipient, value_wei, verdict, reasons, ai_summary, created_at
+           FROM relay_bids
+           ORDER BY slot DESC, created_at DESC
+           LIMIT 100`;
+    const params = slot ? [slot] : [];
+    const res = await pool.query(query, params).catch(() => ({ rows: [] }));
+    return res.rows;
+}
+
 fastify.get('/api/relay/bids', async (request, reply) => {
-    const result = await pool.query(
-        `SELECT id, slot, builder_id, block_hash, fee_recipient, value_wei, verdict, reasons, created_at
-         FROM relay_bids
-         ORDER BY slot DESC, created_at DESC
-         LIMIT 50`
-    ).catch(() => ({ rows: [] }));
-    return result.rows;
+    return queryRelayBids((request.query as any)?.slot);
 });
+fastify.get('/relay/bids', async (request, reply) => {
+    return queryRelayBids((request.query as any)?.slot);
+});
+
+fastify.post('/relay/submit_bid', async (request, reply) => {
+    return proxyRelayRequest(request, reply, '/relay/submit_bid', 'POST');
+});
+fastify.post('/api/relay/submit_bid', async (request, reply) => {
+    return proxyRelayRequest(request, reply, '/relay/submit_bid', 'POST');
+});
+
+fastify.get('/relay/best_header', async (request, reply) => {
+    return proxyBestHeader(request, reply);
+});
+fastify.get('/api/relay/best_header', async (request, reply) => {
+    return proxyBestHeader(request, reply);
+});
+
+fastify.get('/relay/payload', async (request, reply) => {
+    const queryStr = new URLSearchParams(request.query as any).toString();
+    return proxyRelayRequest(request, reply, `/relay/payload${queryStr ? `?${queryStr}` : ''}`, 'GET');
+});
+fastify.get('/api/relay/payload', async (request, reply) => {
+    const queryStr = new URLSearchParams(request.query as any).toString();
+    return proxyRelayRequest(request, reply, `/relay/payload${queryStr ? `?${queryStr}` : ''}`, 'GET');
+});
+
+fastify.get('/relay/slot/:slot/export', async (request, reply) => {
+    const { slot } = request.params as { slot: string };
+    return proxyExportZip(slot, reply);
+});
+fastify.get('/api/relay/slot/:slot/export', async (request, reply) => {
+    const { slot } = request.params as { slot: string };
+    return proxyExportZip(slot, reply);
+});
+fastify.get('/export/slot/:slot', async (request, reply) => {
+    const { slot } = request.params as { slot: string };
+    return proxyExportZip(slot, reply);
+});
+fastify.get('/api/export/slot/:slot', async (request, reply) => {
+    const { slot } = request.params as { slot: string };
+    return proxyExportZip(slot, reply);
+});
+
 
 fastify.post('/api/admin/refresh', async (request, reply) => {
     const authHeader = request.headers.authorization;
@@ -814,6 +965,106 @@ setInterval(async () => {
         }
     } catch (err) {
         fastify.log.error(`Polling error in decision watcher: ${err}`);
+    }
+}, 500);
+
+async function generateBidSummary(row: {
+    id: string | number;
+    slot: number;
+    builder_id: string;
+    value_wei: string;
+    verdict: string;
+    reasons: any;
+}) {
+    const reasonsList = Array.isArray(row.reasons) ? row.reasons : [];
+    const valueEth = Number(row.value_wei) / 1e18;
+    const summarizeUrl = AI_EXPLAINER_URL.replace(/\/explain$/, '/summarize_bid');
+
+    try {
+        const response = await fetch(summarizeUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Secret': INTERNAL_SERVICE_SECRET,
+            },
+            body: JSON.stringify({
+                slot: row.slot,
+                builder_id: row.builder_id,
+                value_eth: valueEth,
+                verdict: row.verdict,
+                reasons: reasonsList,
+            }),
+            signal: AbortSignal.timeout(5000),
+        });
+
+        let summary = '';
+        if (response.ok) {
+            const data = (await response.json()) as { summary: string };
+            summary = data.summary;
+        } else {
+            summary = `Bid ${valueEth.toFixed(4)} ETH from ${row.builder_id} evaluated with verdict ${row.verdict}.`;
+        }
+
+        await pool.query(
+            `UPDATE relay_bids SET ai_summary = $1 WHERE id = $2`,
+            [summary, row.id]
+        );
+
+        broadcast({
+            type: 'bid_verdict',
+            data: {
+                ...row,
+                ai_summary: summary,
+            },
+        });
+    } catch (err: any) {
+        const fallback = `Bid ${valueEth.toFixed(4)} ETH from ${row.builder_id} evaluated as ${row.verdict}.`;
+        await pool.query(
+            `UPDATE relay_bids SET ai_summary = $1 WHERE id = $2 AND ai_summary IS NULL`,
+            [fallback, row.id]
+        ).catch(() => {});
+    }
+}
+
+// Relay bids watcher
+let lastSeenBidId = 0;
+(async () => {
+    try {
+        const latest = await pool.query(
+            `SELECT id FROM relay_bids ORDER BY id DESC LIMIT 1`
+        );
+        if (latest.rows.length > 0) {
+            lastSeenBidId = Math.max(0, Number(latest.rows[0].id) - 100);
+        }
+    } catch {
+        // ignore
+    }
+})();
+
+setInterval(async () => {
+    try {
+        const result = await pool.query(
+            `SELECT id, slot, builder_id, block_hash, fee_recipient, value_wei, verdict, reasons, ai_summary, created_at
+             FROM relay_bids
+             WHERE id > $1 OR (ai_summary IS NULL AND verdict != 'PENDING')
+             ORDER BY id ASC
+             LIMIT 25`,
+            [lastSeenBidId]
+        );
+
+        for (const row of result.rows) {
+            const numId = Number(row.id);
+            if (numId > lastSeenBidId) {
+                lastSeenBidId = numId;
+                broadcast({ type: 'bid_verdict', data: row });
+            }
+
+            if (!row.ai_summary && row.verdict !== 'PENDING') {
+                await generateBidSummary(row);
+            }
+        }
+    } catch (err) {
+        // quiet
     }
 }, 500);
 

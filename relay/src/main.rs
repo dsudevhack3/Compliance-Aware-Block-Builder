@@ -23,7 +23,8 @@ async fn main() -> eyre::Result<()> {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(20)
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres");

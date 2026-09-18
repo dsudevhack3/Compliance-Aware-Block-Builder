@@ -135,6 +135,77 @@ Instructions:
     )
 
 
+class BidSummaryInput(BaseModel):
+    slot: int
+    builder_id: str
+    value_eth: float
+    verdict: str
+    reasons: List[str]
+    block_hash: Optional[str] = None
+
+
+class BidSummaryOutput(BaseModel):
+    slot: int
+    builder_id: str
+    verdict: str
+    summary: str
+
+
+@app.post("/summarize_bid", response_model=BidSummaryOutput)
+def summarize_bid(
+    input: BidSummaryInput,
+    request: Request,
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+    authorization: Optional[str] = Header(None),
+):
+    verify_service_auth(x_internal_secret=x_internal_secret, authorization=authorization)
+
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(client_ip)
+
+    prompt = f"""You are an institutional compliance auditor for an Ethereum block builder relay.
+Generate a concise, authoritative 1-2 sentence regulatory audit summary for the following block builder bid:
+
+Bid Details:
+- Slot: {input.slot}
+- Builder: {input.builder_id}
+- Bid Value: {input.value_eth:.4f} ETH
+- Compliance Verdict: {input.verdict} (COMPLIANT | EXPOSED_TX | EXPOSED_BUILDER | PENDING)
+- Reason Codes / Violations: {', '.join(input.reasons) if input.reasons else 'None'}
+
+Formatting Rules:
+- If verdict is EXPOSED_TX or EXPOSED_BUILDER: State clearly that the bid was excluded/disqualified and cite the primary violation reason (e.g. 'Bid 2.5 ETH excluded due to SANCTIONED_RECIPIENT in tx...').
+- If verdict is COMPLIANT: State that the bid of {input.value_eth:.4f} ETH was verified compliant with active screening policy.
+- Maximum 2 sentences. Professional, factual, audit-ready tone."""
+
+    try:
+        if not client:
+            raise RuntimeError("Gemini client not initialized")
+
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=prompt,
+        )
+        summary = response.text.strip()
+    except Exception:
+        reasons_str = "; ".join(input.reasons) if input.reasons else "Sanctions violation"
+        if input.verdict == "COMPLIANT":
+            summary = f"Bid {input.value_eth:.4f} ETH from {input.builder_id} verified COMPLIANT with active institutional screening policy."
+        elif input.verdict == "EXPOSED_BUILDER":
+            summary = f"Bid {input.value_eth:.4f} ETH excluded due to sanctioned builder fee recipient ({reasons_str})."
+        elif input.verdict == "EXPOSED_TX":
+            summary = f"Bid {input.value_eth:.4f} ETH excluded due to prohibited transaction payload ({reasons_str})."
+        else:
+            summary = f"Bid {input.value_eth:.4f} ETH from {input.builder_id} evaluated with verdict {input.verdict}."
+
+    return BidSummaryOutput(
+        slot=input.slot,
+        builder_id=input.builder_id,
+        verdict=input.verdict,
+        summary=summary,
+    )
+
+
 @app.get("/health")
 def health():
     return {
@@ -142,3 +213,4 @@ def health():
         "gemini_configured": client is not None,
         "auth_enforced": True,
     }
+

@@ -12,6 +12,9 @@ import {
   ArrowRight,
   FileText,
   Sparkles,
+  Trophy,
+  Shield,
+  RefreshCw,
 } from 'lucide-react';
 import './arcade/arcade.css';
 
@@ -32,6 +35,43 @@ export type Decision = {
   integrity_hash?: string | null;
   created_at: string;
 };
+
+export interface RelayBid {
+  id: string;
+  slot: number;
+  builder_id: string;
+  block_hash: string;
+  fee_recipient: string;
+  value_wei: string;
+  verdict: 'COMPLIANT' | 'EXPOSED_TX' | 'EXPOSED_BUILDER' | 'PENDING';
+  reasons: string[];
+  ai_summary?: string | null;
+  created_at: string;
+}
+
+export interface BestHeader {
+  slot: number;
+  block_hash: string;
+  builder_id: string;
+  builder_pubkey?: string;
+  fee_recipient: string;
+  value_wei: string;
+}
+
+export interface EddCase {
+  id: string;
+  case_ref: string;
+  tx_hash: string;
+  bid_hash?: string | null;
+  status: 'OPEN' | 'APPROVED' | 'QUARANTINED';
+  assignee?: string | null;
+  note?: string | null;
+  risk_score: number;
+  reasons: string[];
+  created_at: string;
+  resolved_at?: string | null;
+}
+
 
 export type Block = {
   block_hash: string;
@@ -217,22 +257,33 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [selected, setSelected] = useState<Decision | null>(DEFAULT_SAMPLE_DECISIONS[0]);
-  const [activeTab, setActiveTab] = useState<'mempool' | 'blocks' | 'lineage'>('mempool');
+  const [activeTab, setActiveTab] = useState<'mempool' | 'blocks' | 'lineage' | 'auction'>('mempool');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ALLOW' | 'FLAG' | 'BLOCK'>('ALL');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
   const [isSwitchingPolicy, setIsSwitchingPolicy] = useState(false);
   const [wsConnected, setWsConnected] = useState(true);
+  const [relayBids, setRelayBids] = useState<RelayBid[]>([]);
+  const [bestHeader, setBestHeader] = useState<BestHeader | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<number>(12);
+  const [eddCases, setEddCases] = useState<EddCase[]>([]);
+  const [isEddDrawerOpen, setIsEddDrawerOpen] = useState(false);
+  const [isResolvingEdd, setIsResolvingEdd] = useState<string | null>(null);
+  const [eddNote, setEddNote] = useState('');
+  const [isReevaluatingSlot, setIsReevaluatingSlot] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [d, b, s, p] = await Promise.all([
+      const [d, b, s, p, rb, bh, edd] = await Promise.all([
         fetch(`${API_URL}/api/decisions`).then((r) => r.json()).catch(() => []),
         fetch(`${API_URL}/api/blocks`).then((r) => r.json()).catch(() => []),
         fetch(`${API_URL}/api/stats`).then((r) => r.json()).catch(() => null),
         fetch(`${API_URL}/api/policies`).then((r) => r.json()).catch(() => []),
+        fetch(`${API_URL}/api/relay/bids?slot=${selectedSlot}`).then((r) => r.json()).catch(() => []),
+        fetch(`${API_URL}/api/relay/best_header?slot=${selectedSlot}`).then((r) => r.json()).catch(() => null),
+        fetch(`${API_URL}/api/edd/cases`).then((r) => r.json()).catch(() => []),
       ]);
       if (Array.isArray(d) && d.length > 0) {
         setDecisions(d);
@@ -245,10 +296,62 @@ export default function Dashboard() {
       if (Array.isArray(p) && p.length > 0) {
         setPolicies(p);
       }
+      if (Array.isArray(rb)) {
+        setRelayBids(rb);
+      }
+      if (bh && !bh.error) {
+        setBestHeader(bh);
+      } else {
+        setBestHeader(null);
+      }
+      if (Array.isArray(edd)) {
+        setEddCases(edd);
+      }
     } catch {
       // Keep fallback gracefully
     }
-  }, []);
+  }, [selectedSlot]);
+
+  async function resolveEddCase(id: string, status: 'APPROVED' | 'QUARANTINED') {
+    setIsResolvingEdd(id);
+    try {
+      const res = await fetch(`${API_URL}/api/edd/${id}/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.NEXT_PUBLIC_ADMIN_API_KEY || 'dev-admin-secret-2026',
+        },
+        body: JSON.stringify({
+          status,
+          assignee: 'auditor_compliance_officer_1',
+          note: eddNote.trim() || `Auditor verdict set to ${status}`,
+        }),
+      });
+      if (res.ok) {
+        setEddNote('');
+        await fetchAll();
+      }
+    } catch {
+      //
+    } finally {
+      setIsResolvingEdd(null);
+    }
+  }
+
+  function downloadSarPack(slot: number) {
+    window.open(`${API_URL}/api/relay/slot/${slot}/export`, '_blank');
+  }
+
+  async function reRunSlotAudit(slot: number) {
+    setIsReevaluatingSlot(true);
+    try {
+      await fetch(`${API_URL}/api/relay/best_header?slot=${slot}`).catch(() => {});
+      await fetchAll();
+    } finally {
+      setIsReevaluatingSlot(false);
+    }
+  }
+
 
   async function switchPolicy(policyId: string) {
     setIsSwitchingPolicy(true);
@@ -595,6 +698,37 @@ export default function Dashboard() {
               }`}
             >
               <span>🔍</span> Lineage Inspector <span className="w-2 h-2 rounded-full bg-[#48BB78] inline-block" />
+            </button>
+
+            <button
+              onClick={() => setActiveTab('auction')}
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all ${
+                activeTab === 'auction'
+                  ? 'btn-3d bg-[#48BB78] border-2 border-[#1D5E38] text-white shadow-md'
+                  : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
+              }`}
+            >
+              <Trophy className="size-4 text-amber-300" />
+              <span>Relay Auction</span>
+              {bestHeader && (
+                <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-[#1D5E38] text-white font-mono font-bold">
+                  Slot {selectedSlot}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setIsEddDrawerOpen(true)}
+              className="px-3.5 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all shadow-sm"
+              title="Open Enhanced Due Diligence Review Queue"
+            >
+              <Shield className="size-4 text-orange-600" />
+              <span>EDD Inbox</span>
+              {eddCases.filter((c) => c.status === 'OPEN').length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-extrabold animate-pulse">
+                  {eddCases.filter((c) => c.status === 'OPEN').length}
+                </span>
+              )}
             </button>
           </div>
         </section>
@@ -1367,6 +1501,255 @@ export default function Dashboard() {
           </section>
         )}
 
+        {/* Tab 4: Relay Auction (Active Tab: Auction) */}
+        {activeTab === 'auction' && (
+          <section className="tactile-card bg-[#FFFDF9] rounded-3xl p-5 md:p-6 space-y-6">
+            {/* Header / Sub-nav */}
+            <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b-2 border-[#E7D6C5]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#E5F7EB] border-2 border-[#48BB78] flex items-center justify-center text-xl shadow-sm">
+                  🏆
+                </div>
+                <div>
+                  <h2 className="text-xl md:text-2xl font-black text-[#5C2B1A] flex items-center gap-2">
+                    Relay Compliance Auction
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#E5F7EB] border border-[#48BB78] text-[#1D5E38] font-bold">
+                      LIVE GATE
+                    </span>
+                  </h2>
+                  <p className="text-xs text-[#8A4C33] font-semibold">
+                    Real-time builder bids screened through deterministic policy engine before winning header selection
+                  </p>
+                </div>
+              </div>
+
+              {/* Slot & Actions */}
+              <div className="flex items-center flex-wrap gap-2.5">
+                <div className="flex items-center bg-[#F5E4D0] border-2 border-[#8F4C30] rounded-2xl px-3 py-1.5 gap-2">
+                  <span className="text-xs font-bold text-[#7F442C]">Slot:</span>
+                  <input
+                    type="number"
+                    value={selectedSlot}
+                    onChange={(e) => setSelectedSlot(Number(e.target.value) || 0)}
+                    className="w-16 bg-white border border-[#8F4C30] rounded-lg px-2 py-0.5 text-xs font-mono font-bold text-[#5C2B1A] focus:outline-none"
+                  />
+                  <button
+                    onClick={() => reRunSlotAudit(selectedSlot)}
+                    disabled={isReevaluatingSlot}
+                    className="p-1 rounded-lg bg-[#ECD0B3] hover:bg-[#E3C3A0] text-[#692E19] transition-all"
+                    title="Refresh Slot Verdicts"
+                  >
+                    <RefreshCw className={`size-3.5 ${isReevaluatingSlot ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => setIsPolicyModalOpen(true)}
+                  className="px-3.5 py-2 rounded-2xl font-black text-xs bg-[#FFF8EE] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <SlidersHorizontal className="size-3.5" />
+                  <span>Switch Policy</span>
+                </button>
+
+                <button
+                  onClick={() => downloadSarPack(selectedSlot)}
+                  className="btn-3d bg-[#48BB78] border-2 border-[#1D5E38] text-white px-3.5 py-2 rounded-2xl font-black text-xs flex items-center gap-1.5 shadow-md hover:brightness-105 transition-all"
+                >
+                  <Download className="size-3.5" />
+                  <span>Export Signed SAR Pack (.zip)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Winning Header Spotlight Card */}
+            {bestHeader ? (
+              <div className="tactile-card bg-[#E5F7EB] border-[3px] border-[#48BB78] rounded-2xl p-4 md:p-5 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-[#48BB78] text-white flex items-center justify-center text-2xl shadow-sm">
+                    🥇
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black uppercase tracking-wider text-[#1D5E38]">
+                        WINNING COMPLIANT BLOCK HEADER
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-white border border-[#48BB78] text-[#1D5E38] font-mono text-xs font-black">
+                        Slot {bestHeader.slot}
+                      </span>
+                    </div>
+                    <div className="text-lg md:text-xl font-black text-[#154629] font-mono mt-0.5">
+                      {bestHeader.builder_id}
+                    </div>
+                    <div className="text-xs text-[#286C45] font-mono">
+                      Block: {bestHeader.block_hash.slice(0, 18)}... | Recipient: {shortAddr(bestHeader.fee_recipient)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-right">
+                  <div className="text-xs uppercase font-bold text-[#1D5E38]">Validated MEV Bid Value</div>
+                  <div className="text-2xl md:text-3xl font-black font-mono text-[#154629]">
+                    {(Number(bestHeader.value_wei) / 1e18).toFixed(4)} ETH
+                  </div>
+                  <div className="text-[11px] text-[#286C45] font-bold">
+                    ✓ Cryptographically Proven Sanction-Free
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="tactile-card bg-[#FFF8EE] border-2 border-[#8F4C30] rounded-2xl p-4 text-center">
+                <p className="text-sm font-bold text-[#8A4C33]">
+                  No compliant header selected for Slot {selectedSlot}. All submitted bids either pending or disqualified.
+                </p>
+              </div>
+            )}
+
+            {/* Auction Bids Table */}
+            <div className="border-2 border-[#8F4C30] rounded-2xl overflow-hidden bg-white shadow-inner">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs sm:text-sm font-mono">
+                  <thead className="bg-[#F8ECE0] text-[#7A3F29] uppercase font-black text-[11px] tracking-wider border-b-2 border-[#8F4C30]">
+                    <tr>
+                      <th className="py-3 px-4">Builder ID</th>
+                      <th className="py-3 px-4">Bid Value</th>
+                      <th className="py-3 px-4">Compliance Verdict</th>
+                      <th className="py-3 px-4">Reason Codes &amp; Disqualification Proof</th>
+                      <th className="py-3 px-4">AI Audit Narration</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F1DEC9]">
+                    {relayBids.length > 0 ? (
+                      relayBids.map((bid) => {
+                        const isWinner = bestHeader?.builder_id === bid.builder_id && bid.verdict === 'COMPLIANT';
+                        const isTainted = bid.verdict === 'EXPOSED_TX' || bid.verdict === 'EXPOSED_BUILDER';
+                        const valueEth = (Number(bid.value_wei) / 1e18).toFixed(4);
+
+                        return (
+                          <tr
+                            key={bid.id}
+                            className={`transition-colors ${
+                              isWinner
+                                ? 'bg-[#E5F7EB]/70 font-semibold'
+                                : isTainted
+                                ? 'bg-red-50/60'
+                                : 'hover:bg-[#FFF9F2]'
+                            }`}
+                          >
+                            {/* Builder */}
+                            <td className="py-3.5 px-4 font-bold">
+                              <div className="flex items-center gap-2">
+                                {isWinner && <span className="text-sm">🏆</span>}
+                                {isTainted && <span className="text-sm">⛔</span>}
+                                <span
+                                  className={`${
+                                    isWinner
+                                      ? 'text-[#1D5E38] font-black'
+                                      : isTainted
+                                      ? 'line-through text-red-600 font-semibold'
+                                      : 'text-[#5C2B1A]'
+                                  }`}
+                                >
+                                  {bid.builder_id}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-[#A06449] font-normal font-mono">
+                                Fee: {shortAddr(bid.fee_recipient)}
+                              </div>
+                            </td>
+
+                            {/* Value */}
+                            <td className="py-3.5 px-4 font-black">
+                              <span
+                                className={`text-sm ${
+                                  isWinner
+                                    ? 'text-[#1D5E38]'
+                                    : isTainted
+                                    ? 'line-through text-red-600'
+                                    : 'text-[#5C2B1A]'
+                                }`}
+                              >
+                                {valueEth} ETH
+                              </span>
+                            </td>
+
+                            {/* Verdict */}
+                            <td className="py-3.5 px-4">
+                              {isWinner ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#1D5E38] text-xs font-black">
+                                  ✓ COMPLIANT (WINNER)
+                                </span>
+                              ) : bid.verdict === 'COMPLIANT' ? (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-[#E5F7EB] border border-[#48BB78] text-[#1D5E38] text-xs font-bold">
+                                  COMPLIANT
+                                </span>
+                              ) : bid.verdict === 'EXPOSED_TX' ? (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-red-100 border-2 border-red-500 text-red-700 text-xs font-black">
+                                  ⛔ EXPOSED TX (DISQUALIFIED)
+                                </span>
+                              ) : bid.verdict === 'EXPOSED_BUILDER' ? (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-red-100 border-2 border-red-500 text-red-700 text-xs font-black">
+                                  ⛔ EXPOSED BUILDER (DISQUALIFIED)
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-100 border border-amber-400 text-amber-800 text-xs font-bold">
+                                  PENDING AUDIT
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Reasons */}
+                            <td className="py-3.5 px-4 max-w-xs">
+                              {bid.reasons && bid.reasons.length > 0 ? (
+                                <div className="space-y-1">
+                                  {bid.reasons.map((r, idx) => (
+                                    <span
+                                      key={idx}
+                                      className="inline-block px-2 py-0.5 text-[10px] rounded bg-red-100 border border-red-300 text-red-800 font-bold mr-1 mb-0.5"
+                                    >
+                                      {r}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-[#48BB78] font-bold">
+                                  Zero sanctions exposure detected
+                                </span>
+                              )}
+                            </td>
+
+                            {/* AI Summary */}
+                            <td className="py-3.5 px-4 max-w-sm">
+                              {bid.ai_summary ? (
+                                <div className="text-[11px] text-[#5C2B1A] font-sans font-semibold leading-snug bg-[#FFF8EE] border border-[#ECD0B3] p-2 rounded-xl">
+                                  <div className="flex items-center gap-1 text-[10px] font-extrabold text-[#964724] uppercase mb-0.5">
+                                    <Sparkles className="size-3 text-amber-500" />
+                                    <span>Audit Note</span>
+                                  </div>
+                                  {bid.ai_summary}
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-[#B58570] italic">
+                                  Narration pending...
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-[#8A4C33] font-bold">
+                          No bids recorded for Slot {selectedSlot}. Run mock builders (`cargo run --bin mock_builders -- --slot {selectedSlot}`) to populate live auction.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Section 7: Bottom HUD Status Dock (Exact Match to Reference Screen) */}
         <footer className="tactile-card bg-[#F5E4D0] rounded-3xl p-3.5 px-6 flex flex-wrap items-center justify-between gap-4 border-[3.5px] border-[#8F4C30]">
           {/* Telemetry */}
@@ -1394,7 +1777,120 @@ export default function Dashboard() {
           </div>
         </footer>
 
+        {/* EDD Review Inbox Drawer */}
+        {isEddDrawerOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/50 backdrop-blur-sm p-4">
+            <div className="tactile-card bg-[#FFFDF9] rounded-3xl p-6 w-full max-w-xl max-h-[90vh] overflow-y-auto space-y-4 border-[3px] border-[#8F4C30] shadow-2xl">
+              <div className="flex items-center justify-between pb-3 border-b-2 border-[#E7D6C5]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-orange-100 border border-orange-400 flex items-center justify-center text-lg">
+                    🛡️
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-[#5C2B1A]">Enhanced Due Diligence (EDD) Queue</h3>
+                    <p className="text-xs text-[#8A4C33]">Automated FLAG review &amp; compliance auditor sign-off</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsEddDrawerOpen(false)}
+                  className="p-1.5 rounded-xl bg-[#F0DECB] hover:bg-[#E3C3A0] text-[#692E19]"
+                >
+                  <X className="size-5" />
+                </button>
+              </div>
+
+              {/* Note input */}
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-[#692E19]">Auditor Resolution Note:</label>
+                <input
+                  type="text"
+                  value={eddNote}
+                  onChange={(e) => setEddNote(e.target.value)}
+                  placeholder="e.g. Originator VASP KYC certificate verified offline"
+                  className="w-full bg-[#FFF8EE] border-2 border-[#8F4C30] rounded-xl px-3 py-2 text-xs text-[#5C2B1A] font-medium focus:outline-none"
+                />
+              </div>
+
+              {/* Cases List */}
+              <div className="space-y-3">
+                {eddCases.length > 0 ? (
+                  eddCases.map((c) => (
+                    <div
+                      key={c.id}
+                      className="tactile-card-sm bg-[#FFF8EE] p-3.5 rounded-2xl space-y-2 border border-[#ECD0B3]"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-xs font-black text-[#5C2B1A]">Case #{c.id}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                            c.status === 'OPEN'
+                              ? 'bg-amber-100 border border-amber-400 text-amber-800 animate-pulse'
+                              : c.status === 'APPROVED'
+                              ? 'bg-emerald-100 border border-emerald-400 text-emerald-800'
+                              : 'bg-red-100 border border-red-400 text-red-800'
+                          }`}
+                        >
+                          {c.status}
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-mono text-[#8F4C30] break-all">
+                        Tx: {c.tx_hash}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="font-bold text-[#7A3F29]">Risk Score:</span>
+                        <span className="font-mono font-extrabold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                          {c.risk_score} / 100
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {c.reasons &&
+                          c.reasons.map((r, i) => (
+                            <span
+                              key={i}
+                              className="px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 text-[10px] font-bold rounded"
+                            >
+                              {r}
+                            </span>
+                          ))}
+                      </div>
+                      {c.note && (
+                        <div className="text-[11px] text-[#692E19] italic bg-white p-2 rounded-lg border border-[#E7D6C5]">
+                          Note: {c.note}
+                        </div>
+                      )}
+
+                      {c.status === 'OPEN' && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            onClick={() => resolveEddCase(c.id, 'APPROVED')}
+                            disabled={isResolvingEdd === c.id}
+                            className="btn-3d bg-[#48BB78] border border-[#1D5E38] text-white px-3 py-1.5 rounded-xl font-bold text-xs hover:brightness-105"
+                          >
+                            ✓ Approve (Whitelist)
+                          </button>
+                          <button
+                            onClick={() => resolveEddCase(c.id, 'QUARANTINED')}
+                            disabled={isResolvingEdd === c.id}
+                            className="btn-3d bg-[#E53E3E] border border-[#9B2C2C] text-white px-3 py-1.5 rounded-xl font-bold text-xs hover:brightness-105"
+                          >
+                            ✕ Quarantine
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-6 text-xs text-[#8A4C33] font-bold">
+                    No EDD cases in queue.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
 }
+

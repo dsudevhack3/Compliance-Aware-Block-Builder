@@ -176,11 +176,34 @@ pub fn create_relay_app(state: Arc<RelayState>) -> Router {
         .with_state(state)
 }
 
-async fn health_handler() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "compliance-relay"
-    }))
+async fn health_handler(
+    State(state): State<Arc<RelayState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let pg_ok = sqlx::query("SELECT 1").execute(&state.pool).await.is_ok();
+    let redis_ok = state
+        .provider
+        .is_sanctioned("0x0000000000000000000000000000000000000000")
+        .await
+        .is_ok();
+
+    if pg_ok && redis_ok {
+        Ok(Json(serde_json::json!({
+            "status": "ok",
+            "service": "compliance-relay",
+            "postgres": "healthy",
+            "redis": "healthy"
+        })))
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "degraded",
+                "service": "compliance-relay",
+                "postgres": if pg_ok { "healthy" } else { "unhealthy" },
+                "redis": if redis_ok { "healthy" } else { "unhealthy" }
+            })),
+        ))
+    }
 }
 
 async fn submit_bid_handler(
@@ -449,32 +472,53 @@ async fn list_bids_handler(
     Json(filtered)
 }
 
+pub fn select_best_compliant_header<'a>(
+    bids: &'a [StoredBid],
+    slot: u64,
+) -> Option<&'a StoredBid> {
+    bids.iter()
+        .filter(|b| b.slot == slot && b.verdict == BidVerdict::Compliant)
+        .max_by_key(|b| b.value_wei_num)
+}
+
+pub fn filter_valid_transactions(
+    txs: &[TxItem],
+    blocked_txs: &std::collections::HashSet<String>,
+    dead_bundles: &std::collections::HashSet<String>,
+) -> Vec<TxItem> {
+    txs.iter()
+        .filter(|t| {
+            if blocked_txs.contains(&t.hash) {
+                return false;
+            }
+            if let Some(bundle_id) = &t.bundle_id {
+                if dead_bundles.contains(bundle_id) {
+                    return false;
+                }
+            }
+            true
+        })
+        .cloned()
+        .collect()
+}
+
 async fn best_header_handler(
     State(state): State<Arc<RelayState>>,
     Query(query): Query<BestHeaderQuery>,
 ) -> Result<Json<HeaderResponse>, (StatusCode, Json<serde_json::Value>)> {
     let bids_lock = state.bids.read().await;
 
-    // Filter COMPLIANT bids for the slot
-    let compliant_bids: Vec<&StoredBid> = bids_lock
-        .iter()
-        .filter(|b| b.slot == query.slot && b.verdict == BidVerdict::Compliant)
-        .collect();
-
-    if compliant_bids.is_empty() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("No compliant header found for slot {}", query.slot)
-            })),
-        ));
-    }
-
-    // Select winner = max(value_wei) among COMPLIANT
-    let winner = compliant_bids
-        .into_iter()
-        .max_by_key(|b| b.value_wei_num)
-        .unwrap();
+    let winner = match select_best_compliant_header(&bids_lock, query.slot) {
+        Some(w) => w,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("No compliant header found for slot {}", query.slot)
+                })),
+            ));
+        }
+    };
 
     Ok(Json(HeaderResponse {
         slot: winner.slot,
@@ -759,4 +803,89 @@ mod tests {
             "\"PENDING\""
         );
     }
+
+    #[test]
+    fn test_block_wins_over_value() {
+        let mut bids = Vec::new();
+        // High-value bid with sanctions exposure: 10 ETH
+        bids.push(StoredBid {
+            bid_id: "bid-malicious".to_string(),
+            slot: 10,
+            block_hash: "0xhash1".to_string(),
+            builder_id: "builder-malicious".to_string(),
+            builder_pubkey: "0xpub1".to_string(),
+            fee_recipient: "0xfee1".to_string(),
+            value_wei: "10000000000000000000".to_string(),
+            value_wei_num: 10000000000000000000u128,
+            verdict: BidVerdict::ExposedTx,
+            reasons: vec!["Tx blocked: SANCTIONED_SENDER".to_string()],
+            tx_count: 5,
+            txs: vec![],
+            created_at: "".to_string(),
+        });
+
+        // Lower-value bid fully compliant: 2 ETH
+        bids.push(StoredBid {
+            bid_id: "bid-clean".to_string(),
+            slot: 10,
+            block_hash: "0xhash2".to_string(),
+            builder_id: "builder-clean".to_string(),
+            builder_pubkey: "0xpub2".to_string(),
+            fee_recipient: "0xfee2".to_string(),
+            value_wei: "2000000000000000000".to_string(),
+            value_wei_num: 2000000000000000000u128,
+            verdict: BidVerdict::Compliant,
+            reasons: vec![],
+            tx_count: 5,
+            txs: vec![],
+            created_at: "".to_string(),
+        });
+
+        let winner = select_best_compliant_header(&bids, 10).expect("should find compliant winner");
+        assert_eq!(winner.builder_id, "builder-clean");
+        assert_eq!(winner.value_wei_num, 2000000000000000000u128);
+    }
+
+    #[test]
+    fn test_bundle_atomicity() {
+        let tx1 = TxItem {
+            hash: "0xtx1".to_string(),
+            sender: "0xuser1".to_string(),
+            recipient: Some("0xrecipient1".to_string()),
+            value: Some(serde_json::json!(100)),
+            bundle_id: Some("bundle-alpha".to_string()),
+            value_usd: None,
+            vasp_metadata: None,
+        };
+        let tx2_blocked = TxItem {
+            hash: "0xtx2_blocked".to_string(),
+            sender: "0xsanctioned".to_string(),
+            recipient: Some("0xrecipient2".to_string()),
+            value: Some(serde_json::json!(200)),
+            bundle_id: Some("bundle-alpha".to_string()),
+            value_usd: None,
+            vasp_metadata: None,
+        };
+        let tx3_independent = TxItem {
+            hash: "0xtx3_independent".to_string(),
+            sender: "0xclean".to_string(),
+            recipient: Some("0xrecipient3".to_string()),
+            value: Some(serde_json::json!(300)),
+            bundle_id: None,
+            value_usd: None,
+            vasp_metadata: None,
+        };
+
+        let all_txs = vec![tx1, tx2_blocked, tx3_independent];
+        let mut blocked_txs = std::collections::HashSet::new();
+        blocked_txs.insert("0xtx2_blocked".to_string());
+        let mut dead_bundles = std::collections::HashSet::new();
+        dead_bundles.insert("bundle-alpha".to_string());
+
+        let valid = filter_valid_transactions(&all_txs, &blocked_txs, &dead_bundles);
+        // Both tx1 and tx2 from bundle-alpha must be dropped atomically; only tx3 survives
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].hash, "0xtx3_independent");
+    }
 }
+
