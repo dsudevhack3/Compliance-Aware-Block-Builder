@@ -885,11 +885,10 @@ impl ComplianceDataProvider for LiveComplianceBackend {
         .map_err(|e| EngineError::StorageError(format!("DB policy query failed: {e}")))?;
 
         if let Some((policy_id, name, description, rules_json)) = row {
-            let parameters: PolicyParameters = serde_json::from_value(rules_json)
-                .map_err(|e| EngineError::InvalidPolicy(format!("Failed to parse policy rules: {e}")))?;
-            parameters
-                .validate()
-                .map_err(EngineError::InvalidPolicy)?;
+            let parameters: PolicyParameters = serde_json::from_value(rules_json).map_err(|e| {
+                EngineError::InvalidPolicy(format!("Failed to parse policy rules: {e}"))
+            })?;
+            parameters.validate().map_err(EngineError::InvalidPolicy)?;
             Ok(CompliancePolicy {
                 policy_id,
                 name,
@@ -983,8 +982,8 @@ pub async fn admin_refresh_handler(
     headers: axum::http::HeaderMap,
     State(provider): State<Arc<dyn ComplianceDataProvider>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let expected_token = std::env::var("ADMIN_SECRET_KEY")
-        .unwrap_or_else(|_| "admin-dev-secret-key".to_string());
+    let expected_token =
+        std::env::var("ADMIN_SECRET_KEY").unwrap_or_else(|_| "admin-dev-secret-key".to_string());
 
     let auth_header = headers
         .get(axum::http::header::AUTHORIZATION)

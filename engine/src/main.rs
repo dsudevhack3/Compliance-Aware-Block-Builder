@@ -45,7 +45,10 @@ async fn main() -> eyre::Result<()> {
             interval.tick().await;
             info!("Running hourly scheduled sanctions refresh from mirror");
             match refresh_backend.load_sanctions_into_redis().await {
-                Ok(count) => info!(records = count, "Scheduled hourly sanctions refresh completed"),
+                Ok(count) => info!(
+                    records = count,
+                    "Scheduled hourly sanctions refresh completed"
+                ),
                 Err(e) => tracing::error!(error = %e, "Scheduled hourly sanctions refresh failed"),
             }
         }
