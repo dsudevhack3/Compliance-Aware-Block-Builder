@@ -15,10 +15,10 @@ pub async fn simulate_with_revm(
     gas_limit: Option<u64>,
 ) -> eyre::Result<(bool, u64)> {
     use revm::{
+        Context, ExecuteEvm, MainBuilder, MainContext,
         database::InMemoryDB,
         primitives::{Address as RAddress, TxKind, U256 as RU256},
         state::AccountInfo,
-        Context, ExecuteEvm, MainBuilder, MainContext,
     };
 
     let mut db = InMemoryDB::default();
@@ -29,7 +29,8 @@ pub async fn simulate_with_revm(
     let live_balance = provider.get_balance(from).await?;
     let live_nonce = provider.get_transaction_count(from).await?;
 
-    let mut info = AccountInfo::from_balance(RU256::from_be_bytes(live_balance.to_be_bytes::<32>()));
+    let mut info =
+        AccountInfo::from_balance(RU256::from_be_bytes(live_balance.to_be_bytes::<32>()));
     info.nonce = live_nonce;
     db.insert_account_info(from_r, info);
 
@@ -39,7 +40,8 @@ pub async fn simulate_with_revm(
     let to_code = provider.get_code_at(to).await?;
     let is_contract = !to_code.is_empty();
 
-    let mut to_info = AccountInfo::from_balance(RU256::from_be_bytes(to_balance.to_be_bytes::<32>()));
+    let mut to_info =
+        AccountInfo::from_balance(RU256::from_be_bytes(to_balance.to_be_bytes::<32>()));
     to_info.nonce = to_nonce;
     if is_contract {
         use revm::state::Bytecode;
@@ -100,11 +102,7 @@ async fn screen_transaction(
         recipient: Some(recipient.to_string()),
     };
 
-    let resp = client
-        .post(engine_url)
-        .json(&req)
-        .send()
-        .await?;
+    let resp = client.post(engine_url).json(&req).send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -129,9 +127,9 @@ async fn submit_transaction(
     calldata: Vec<u8>,
     gas_limit: Option<u64>,
 ) -> eyre::Result<()> {
-
     // Structural Guarantee: All submissions must pass the revm in-process dry-run against Anvil live state
-    let (sim_ok, gas_used) = simulate_with_revm(provider, from, to, value_wei, calldata.clone(), gas_limit).await?;
+    let (sim_ok, gas_used) =
+        simulate_with_revm(provider, from, to, value_wei, calldata.clone(), gas_limit).await?;
     if !sim_ok {
         println!(
             "[{}] revm in-process simulation REVERTED — refusing to submit to chain.",
@@ -175,7 +173,8 @@ async fn submit_transaction(
 }
 
 // Anvil default account #1 private key (clean sender with zero exposure)
-const CLEAN_SENDER_PRIVATE_KEY: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const CLEAN_SENDER_PRIVATE_KEY: &str =
+    "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 // Anvil default account #0 private key (sender used for sanctions & indirect exposure scenarios)
 const SENDER_PRIVATE_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -192,21 +191,24 @@ const COUNTER_CONTRACT_ADDRESS: &str = "0x5FbDB2315678afecb367f032d93F642f64180a
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     dotenvy::dotenv().ok();
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://shresthkumar@localhost:5432/compliance_builder".to_string());
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://shresthkumar@localhost:5432/compliance_builder".to_string()
+    });
     if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
         let _ = sqlx::query("DELETE FROM compliance_decisions WHERE tx_hash LIKE '0xsim%' OR tx_hash LIKE '0xstress%'")
             .execute(&pool)
             .await;
-        let _ = sqlx::query("UPDATE compliance_policies SET is_active = (policy_id = 'institution-standard-v1')")
-            .execute(&pool)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE compliance_policies SET is_active = (policy_id = 'institution-standard-v1')",
+        )
+        .execute(&pool)
+        .await;
     }
 
-    let anvil_rpc = std::env::var("ANVIL_RPC")
-        .unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
-    let engine_url = std::env::var("ENGINE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3001/screen".to_string());
+    let anvil_rpc =
+        std::env::var("ANVIL_RPC").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
+    let engine_url =
+        std::env::var("ENGINE_URL").unwrap_or_else(|_| "http://127.0.0.1:3001/screen".to_string());
 
     let http_client = reqwest::Client::new();
 
@@ -240,7 +242,16 @@ async fn main() -> eyre::Result<()> {
     println!("Compliance decision: {:?}", decision);
 
     if decision.decision == "ALLOW" {
-        submit_transaction(&clean_provider, clean_sender_address, recipient, "Scenario 1", 1_000_000_000_000_000_000u64, vec![], None).await?;
+        submit_transaction(
+            &clean_provider,
+            clean_sender_address,
+            recipient,
+            "Scenario 1",
+            1_000_000_000_000_000_000u64,
+            vec![],
+            None,
+        )
+        .await?;
     } else {
         println!("[Scenario 1] BLOCKED before submission to chain.");
     }
@@ -264,7 +275,16 @@ async fn main() -> eyre::Result<()> {
     println!("Compliance decision: {:?}", decision2);
 
     if decision2.decision == "ALLOW" {
-        submit_transaction(&provider, sender_address, sanctioned, "Scenario 2", 1_000_000_000_000_000_000u64, vec![], None).await?;
+        submit_transaction(
+            &provider,
+            sender_address,
+            sanctioned,
+            "Scenario 2",
+            1_000_000_000_000_000_000u64,
+            vec![],
+            None,
+        )
+        .await?;
     } else {
         println!("[Scenario 2] BLOCKED before submission to chain — compliance engine caught it.");
     }
@@ -288,7 +308,16 @@ async fn main() -> eyre::Result<()> {
     println!("Compliance decision: {:?}", decision3);
 
     if decision3.decision == "ALLOW" {
-        submit_transaction(&provider, sender_address, clean_recipient, "Scenario 3", 1_000_000_000_000_000_000u64, vec![], None).await?;
+        submit_transaction(
+            &provider,
+            sender_address,
+            clean_recipient,
+            "Scenario 3",
+            1_000_000_000_000_000_000u64,
+            vec![],
+            None,
+        )
+        .await?;
     } else if decision3.decision == "FLAG" {
         println!(
             "[Scenario 3] FLAGGED for human review / enhanced due diligence (risk score: {}) — 1-hop graph walk detected indirect exposure to sanctioned entity.",
@@ -358,18 +387,19 @@ async fn main() -> eyre::Result<()> {
     .await
     {
         Ok(d) if d.decision == "ALLOW" => {
-            panic!("[CRITICAL SECURITY VULNERABILITY] Builder allowed transaction despite screening failure!");
+            panic!(
+                "[CRITICAL SECURITY VULNERABILITY] Builder allowed transaction despite screening failure!"
+            );
         }
         Ok(_) => {
             println!("[Scenario 6] Non-allow decision returned.");
         }
         Err(err) => {
-            println!(
-                "  [VERIFIED FAIL-CLOSED] Screening error trapped: {}",
-                err
-            );
+            println!("  [VERIFIED FAIL-CLOSED] Screening error trapped: {}", err);
             println!("  [VERIFIED FAIL-CLOSED] Builder REFUSED to submit transaction to chain.");
-            println!("  [VERIFIED FAIL-CLOSED] Transaction successfully excluded from block candidate bundle.\n");
+            println!(
+                "  [VERIFIED FAIL-CLOSED] Transaction successfully excluded from block candidate bundle.\n"
+            );
         }
     }
 
@@ -407,7 +437,10 @@ pub async fn run_scenario_5_concurrent(engine_url: &str) -> eyre::Result<()> {
             id: "Tx 1 [Clean Transfer]",
             tx_hash: format!("0xstress_{:x}_01", now_ms),
             sender: clean_sender.clone(),
-            recipient: Some(format!("0x88880000000000000000000000000000{:08x}", (now_ms & 0xffffffff) as u32)),
+            recipient: Some(format!(
+                "0x88880000000000000000000000000000{:08x}",
+                (now_ms & 0xffffffff) as u32
+            )),
             expected_decision: "ALLOW",
             expected_risk: 0,
         },
@@ -541,6 +574,8 @@ pub async fn run_scenario_5_concurrent(engine_url: &str) -> eyre::Result<()> {
         );
     }
 
-    println!("All concurrent transactions evaluated with 100% correctness and zero cross-contamination.\n");
+    println!(
+        "All concurrent transactions evaluated with 100% correctness and zero cross-contamination.\n"
+    );
     Ok(())
 }

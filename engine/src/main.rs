@@ -28,7 +28,7 @@ async fn main() -> eyre::Result<()> {
 
     let redis_client = redis::Client::open(redis_url).expect("failed to create Redis client");
 
-    let backend = LiveComplianceBackend::new(pool, redis_client);
+    let backend = Arc::new(LiveComplianceBackend::new(pool, redis_client));
 
     let loaded = backend
         .load_sanctions_into_redis()
@@ -36,7 +36,25 @@ async fn main() -> eyre::Result<()> {
         .expect("failed to warm Redis sanctions cache");
     info!(loaded_count = loaded, "Loaded sanctions hot-set into Redis");
 
-    let app = create_app(Arc::new(backend));
+    // Spawn scheduled hourly background task for sanctions synchronization
+    let refresh_backend = Arc::clone(&backend);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // Skip initial tick since we just loaded
+        loop {
+            interval.tick().await;
+            info!("Running hourly scheduled sanctions refresh from mirror");
+            match refresh_backend.load_sanctions_into_redis().await {
+                Ok(count) => info!(
+                    records = count,
+                    "Scheduled hourly sanctions refresh completed"
+                ),
+                Err(e) => tracing::error!(error = %e, "Scheduled hourly sanctions refresh failed"),
+            }
+        }
+    });
+
+    let app = create_app(backend);
 
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());

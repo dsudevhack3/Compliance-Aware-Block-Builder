@@ -7,8 +7,8 @@ async fn main() -> eyre::Result<()> {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://localhost:5432/compliance_builder".to_string());
-    let anvil_rpc = std::env::var("ANVIL_RPC")
-        .unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
+    let anvil_rpc =
+        std::env::var("ANVIL_RPC").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
 
     let provider = ProviderBuilder::new().connect_http(anvil_rpc.parse()?);
     let pool = PgPoolOptions::new()
