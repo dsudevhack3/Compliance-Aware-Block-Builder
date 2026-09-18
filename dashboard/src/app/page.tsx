@@ -269,6 +269,9 @@ export default function Dashboard() {
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
   const [isSwitchingPolicy, setIsSwitchingPolicy] = useState(false);
   const [wsConnected, setWsConnected] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(isPaused);
+  isPausedRef.current = isPaused;
   const [relayBids, setRelayBids] = useState<RelayBid[]>([]);
   const [bestHeader, setBestHeader] = useState<BestHeader | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<number>(12);
@@ -392,20 +395,50 @@ export default function Dashboard() {
       ws.onclose = () => setWsConnected(false);
       ws.onerror = () => setWsConnected(false);
       ws.onmessage = () => {
-        void fetchAll();
+        if (!isPausedRef.current) {
+          void fetchAll();
+        }
       };
     } catch {
       // fallback
     }
 
     const interval = setInterval(() => {
-      void fetchAll();
+      if (!isPausedRef.current) {
+        void fetchAll();
+      }
     }, 4000);
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
-        e.preventDefault();
-        searchInputRef.current?.focus();
+      const isInput =
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA';
+
+      if (!isInput) {
+        if (e.code === 'Space' || e.key === ' ') {
+          e.preventDefault();
+          setIsPaused((prev) => !prev);
+        } else if (e.key === '/' || e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        } else if (e.key.toLowerCase() === 'r') {
+          e.preventDefault();
+          void fetchAll();
+        } else if (e.key === '1') {
+          setStatusFilter('ALLOW');
+          setActiveTab('mempool');
+        } else if (e.key === '2') {
+          setStatusFilter('FLAG');
+          setActiveTab('mempool');
+        } else if (e.key === '3') {
+          setStatusFilter('BLOCK');
+          setActiveTab('mempool');
+        } else if (e.key === '0') {
+          setStatusFilter('ALL');
+          setActiveTab('mempool');
+        }
+      } else if (e.key === 'Escape') {
+        (document.activeElement as HTMLElement)?.blur();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -463,6 +496,55 @@ export default function Dashboard() {
     );
   }, [blocks, searchQuery]);
 
+  // Dynamic Telemetry Calculations for Header Capsules
+  const totalDecisionsCount = decisions.length;
+  const allowDecisionsCount = useMemo(
+    () => decisions.filter((d) => d.decision === 'ALLOW').length,
+    [decisions]
+  );
+  const flagDecisionsCount = useMemo(
+    () => decisions.filter((d) => d.decision === 'FLAG').length,
+    [decisions]
+  );
+  const blockDecisionsCount = useMemo(
+    () => decisions.filter((d) => d.decision === 'BLOCK').length,
+    [decisions]
+  );
+
+  // Dynamic audit score based on real transaction decisions (clean: 100, flag: 120, block: 150)
+  const dynamicScore = useMemo(
+    () => allowDecisionsCount * 100 + flagDecisionsCount * 120 + blockDecisionsCount * 150,
+    [allowDecisionsCount, flagDecisionsCount, blockDecisionsCount]
+  );
+
+  // Dynamic compliance accuracy percentage
+  const dynamicAccuracy = useMemo(
+    () => (totalDecisionsCount > 0 ? Math.round((allowDecisionsCount / totalDecisionsCount) * 100) : 100),
+    [totalDecisionsCount, allowDecisionsCount]
+  );
+
+  // Dynamic consecutive clean streak
+  const dynamicStreak = useMemo(() => {
+    let streak = 0;
+    for (const d of decisions) {
+      if (d.decision === 'ALLOW') {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }, [decisions]);
+
+  // Dynamic sealed block height
+  const dynamicBlockNumber = useMemo(() => {
+    if (blocks.length === 0) return '#0000';
+    const highest = Math.max(
+      ...blocks.map((b) => parseInt(b.block_number, 10) || 0)
+    );
+    return `#${highest.toString().padStart(4, '0')}`;
+  }, [blocks]);
+
   return (
     <div className="min-h-screen bg-[#F8EAD4] text-[#5D2C1A] p-3 sm:p-6 lg:p-8 flex flex-col justify-between selection:bg-[#FFC570] selection:text-[#5D2C1A]">
       <div className="max-w-[1400px] w-full mx-auto flex flex-col gap-5">
@@ -494,10 +576,11 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Center: Animated Mascot Cats Rally Widget */}
-            <div
-              className="flex items-center justify-center px-3 py-1.5 bg-[#FFF8EE] rounded-2xl border-2 border-[#8F4C30] shadow-sm select-none relative overflow-hidden group hover:scale-[1.03] transition-transform duration-300"
-              title="Chubby Cats Rally Practice"
+            {/* Center: Animated Mascot Cats Rally Widget (Clickable link to /arcade) */}
+            <Link
+              href="/arcade"
+              className="flex items-center justify-center px-3 py-1.5 bg-[#FFF8EE] rounded-2xl border-2 border-[#8F4C30] shadow-sm select-none relative overflow-hidden group hover:scale-[1.05] active:scale-95 transition-all duration-300 cursor-pointer"
+              title="Play Interactive Compliance Arcade Game"
             >
               <svg
                 className="w-[158px] h-[54px] overflow-visible"
@@ -571,6 +654,8 @@ export default function Dashboard() {
                     <path d="M135 36 Q 129 35 125 32" stroke="#FFF1EB" strokeLinecap="round" strokeWidth="3.8" />
                     <path d="M126 32 L119 28" stroke="#954827" strokeLinecap="round" strokeWidth="2.2" />
                     <ellipse cx="115" cy="25" fill="rgba(255,255,255,0.25)" rx="6" ry="8" stroke="#954827" strokeWidth="1.8" transform="rotate(-35 115 25)" />
+                    <line stroke="#C88E75" strokeWidth="0.8" x1="41" x2="47" y1="20" y2="30" />
+                    <line stroke="#C88E75" strokeWidth="0.8" x1="47" x2="41" y1="20" y2="30" />
                   </g>
                 </g>
 
@@ -586,69 +671,98 @@ export default function Dashboard() {
                 </g>
               </svg>
               <span className="absolute bottom-0.5 text-[8px] font-mono font-black text-[#8C5D19] tracking-widest uppercase opacity-75 pointer-events-none">
-                RALLY PAWS
+                RALLY PAWS ↗
               </span>
-            </div>
+            </Link>
 
             {/* Capsules */}
             <div className="flex flex-wrap items-center gap-2.5 ml-auto">
               {/* Score */}
-              <div className="tactile-card-sm bg-[#FFF8EE] rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+              <button
+                onClick={() => setActiveTab('lineage')}
+                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#FFF2DF] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
+                title={`Audit Score: ${dynamicScore} PTS earned across ${totalDecisionsCount} screened transactions. Click to view lineage audit proofs.`}
+              >
                 <div className="w-8 h-8 rounded-xl bg-[#F6BE3D] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm">
                   ⭐
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">SCORE</div>
                   <div className="text-base md:text-lg font-black font-mono text-[#6A2E19] leading-tight">
-                    00150 PTS
+                    {dynamicScore.toString().padStart(5, '0')} PTS
                   </div>
                 </div>
-              </div>
+              </button>
 
               {/* Accuracy */}
-              <div className="tactile-card-sm bg-[#FFF8EE] rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+              <button
+                onClick={() => {
+                  setStatusFilter('ALLOW');
+                  setActiveTab('mempool');
+                }}
+                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#F2FAF4] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
+                title={`Compliance Accuracy: ${allowDecisionsCount} of ${totalDecisionsCount} transactions verified clean. Click to filter ALLOW transactions.`}
+              >
                 <div className="w-8 h-8 rounded-xl bg-[#68D293] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm text-white font-black">
                   ✓
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">ACCURACY</div>
                   <div className="text-base md:text-lg font-black font-mono text-[#235738] leading-tight">
-                    100% <span className="text-xs text-[#6B8574] font-medium">(3/3)</span>
+                    {dynamicAccuracy}%{' '}
+                    <span className="text-xs text-[#6B8574] font-medium">
+                      ({allowDecisionsCount}/{totalDecisionsCount})
+                    </span>
                   </div>
                 </div>
-              </div>
+              </button>
 
               {/* Streak */}
-              <div className="tactile-card-sm bg-[#FFF8EE] rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+              <button
+                onClick={() => {
+                  setStatusFilter('ALL');
+                  setActiveTab('mempool');
+                }}
+                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#FFF0EB] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
+                title={`Clean Streak: ${dynamicStreak} consecutive clean transactions without violation. Click to view all mempool transactions.`}
+              >
                 <div className="w-8 h-8 rounded-xl bg-[#F88164] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm">
                   🔥
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">STREAK</div>
                   <div className="text-base md:text-lg font-black font-mono text-[#8C2E14] leading-tight">
-                    3x
+                    {dynamicStreak}x
                   </div>
                 </div>
-              </div>
+              </button>
 
               {/* Blocks Sealed */}
-              <div className="tactile-card-sm bg-[#FFF8EE] rounded-2xl px-3.5 py-2 flex items-center gap-2.5">
+              <button
+                onClick={() => setActiveTab('blocks')}
+                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#EFF9FC] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
+                title={`Highest Block Height: ${dynamicBlockNumber} sealed by the block builder. Click to inspect sealed block registry.`}
+              >
                 <div className="w-8 h-8 rounded-xl bg-[#86D5EC] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm">
                   📦
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">BLOCKS SEALED</div>
                   <div className="text-base md:text-lg font-black font-mono text-[#185368] leading-tight">
-                    #0005
+                    {dynamicBlockNumber}
                   </div>
                 </div>
-              </div>
+              </button>
 
               {/* WS Indicator */}
-              <div className="bg-[#F0DECB] border-2 border-[#AB6B50] rounded-xl px-2.5 py-2 text-[11px] font-mono font-bold text-[#723E2A] flex items-center gap-1.5 shadow-inner">
+              <button
+                onClick={() => void fetchAll()}
+                className="bg-[#F0DECB] hover:bg-[#E7D1BC] border-2 border-[#AB6B50] rounded-xl px-2.5 py-2 text-[11px] font-mono font-bold text-[#723E2A] flex items-center gap-1.5 shadow-inner cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+                title="Real-time WebSocket connection status. Click to reconnect & refresh telemetry now."
+              >
                 <span className={`w-2.5 h-2.5 rounded-full inline-block shadow ${wsConnected ? 'bg-[#48BB78] ping-slow' : 'bg-[#E53E3E]'}`} />
                 <span>{wsConnected ? 'WS:3002' : 'OFFLINE'}</span>
-              </div>
+              </button>
             </div>
           </div>
         </header>
@@ -659,15 +773,23 @@ export default function Dashboard() {
           <div className="flex items-center gap-3 flex-wrap">
             <span className="w-7 h-7 rounded-xl bg-[#E67D59] text-white flex items-center justify-center text-xs font-black shadow-sm">🛡️</span>
             <span className="text-xs font-bold tracking-wider uppercase text-[#8D4B32]">Active Compliance Policy:</span>
-            <span className="px-3 py-1 rounded-xl bg-[#F6DFBE] border-2 border-[#AC6F51] text-xs md:text-sm font-extrabold text-[#6A2E19] tracking-wide shadow-inner">
+            <button
+              onClick={() => setIsPolicyModalOpen(true)}
+              title="Click to view or switch compliance policy"
+              className="px-3 py-1 rounded-xl bg-[#F6DFBE] hover:bg-[#EDCFAB] border-2 border-[#AC6F51] text-xs md:text-sm font-extrabold text-[#6A2E19] tracking-wide shadow-inner cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
+            >
               {activePolicyId === 'institution-standard-v1' ? 'STANDARD INSTITUTIONAL (STRICT 2-HOP)' : 'LENIENT (1-HOP DIRECT ONLY)'}
-            </span>
+            </button>
 
             {/* 121 OFAC HOT-SET Pill */}
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#D8B4F8] border-2 border-[#8F4C30] text-[#4A1D75] text-xs font-black shadow-sm">
+            <button
+              onClick={() => setIsPolicyModalOpen(true)}
+              title="121 OFAC SDN sanctioned addresses loaded in deterministic cache. Click to open policy settings."
+              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#D8B4F8] hover:bg-[#CF9DF6] border-2 border-[#8F4C30] text-[#4A1D75] text-xs font-black shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+            >
               <span>💾</span>
               <span>121 OFAC HOT-SET</span>
-            </div>
+            </button>
           </div>
 
           {/* Right: 3 Nav Tabs */}
@@ -746,22 +868,44 @@ export default function Dashboard() {
               Build compliant.
             </h1>
             <div className="flex items-center gap-2.5 flex-wrap mt-3">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#1D5E38] text-xs font-bold shadow-sm">
+              <button
+                onClick={() => {
+                  setStatusFilter('ALL');
+                  setActiveTab('mempool');
+                }}
+                title="View deterministic Rust SVM Mempool decisions"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E5F7EB] hover:bg-[#D4F1DE] border-2 border-[#48BB78] text-[#1D5E38] text-xs font-bold shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              >
                 <span className="w-2 h-2 rounded-full bg-[#48BB78]" />
                 Deterministic Rust SVM
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FDECE6] border-2 border-[#DD8264] text-[#8C3E24] text-xs font-bold shadow-sm">
+              </button>
+              <button
+                onClick={() => setActiveTab('lineage')}
+                title="Inspect Multi-Hop Traversal Graph & lineage"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FDECE6] hover:bg-[#FADCD2] border-2 border-[#DD8264] text-[#8C3E24] text-xs font-bold shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              >
                 <span className="w-2 h-2 rounded-full bg-[#DD8264]" />
                 Multi-Hop Traversal
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#F3E8FF] border-2 border-[#C084FC] text-[#6B21A8] text-xs font-bold shadow-sm">
+              </button>
+              <button
+                onClick={() => {
+                  setSearchQuery('vasp');
+                  setActiveTab('mempool');
+                }}
+                title="Filter transactions by VASP attribution"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#F3E8FF] hover:bg-[#E9D5FF] border-2 border-[#C084FC] text-[#6B21A8] text-xs font-bold shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              >
                 <span className="w-2 h-2 rounded-full bg-[#C084FC]" />
                 VASP Attribution
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E0F2FE] border-2 border-[#38BDF8] text-[#0369A1] text-xs font-bold shadow-sm">
+              </button>
+              <button
+                onClick={() => setActiveTab('auction')}
+                title="View PBS Relay block auction proofs & bids"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E0F2FE] hover:bg-[#BAE6FD] border-2 border-[#38BDF8] text-[#0369A1] text-xs font-bold shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              >
                 <span className="w-2 h-2 rounded-full bg-[#38BDF8]" />
                 Verifiable Block Proofs
-              </span>
+              </button>
             </div>
           </div>
 
@@ -1329,13 +1473,45 @@ export default function Dashboard() {
                     filteredBlocks.map((b) => (
                       <tr key={b.block_hash} className="hover:bg-[#FFF6EB] transition-colors">
                         <td className="py-3 px-3 font-black text-[#692E19]">
-                          #{b.block_number}
+                          <button
+                            onClick={() => setSearchQuery(b.block_number)}
+                            title="Filter search to this block number"
+                            className="hover:underline text-left cursor-pointer"
+                          >
+                            #{b.block_number}
+                          </button>
                         </td>
                         <td className="py-3 px-3 text-[#A5684E]">
-                          {shortAddr(b.block_hash)}
+                          <span className="flex items-center gap-1.5">
+                            <span>{shortAddr(b.block_hash)}</span>
+                            <button
+                              onClick={() => handleCopy(b.block_hash, b.block_hash)}
+                              title="Copy block hash"
+                              className="p-0.5 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors cursor-pointer"
+                            >
+                              {copiedKey === b.block_hash ? (
+                                <Check className="size-3 text-[#2F855A]" />
+                              ) : (
+                                <Copy className="size-3 opacity-60 hover:opacity-100" />
+                              )}
+                            </button>
+                          </span>
                         </td>
                         <td className="py-3 px-3 text-[#692E19] font-bold">
-                          {shortAddr(b.builder_address)}
+                          <span className="flex items-center gap-1.5">
+                            <span>{shortAddr(b.builder_address)}</span>
+                            <button
+                              onClick={() => handleCopy(b.builder_address, b.builder_address)}
+                              title="Copy builder address"
+                              className="p-0.5 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors cursor-pointer"
+                            >
+                              {copiedKey === b.builder_address ? (
+                                <Check className="size-3 text-[#2F855A]" />
+                              ) : (
+                                <Copy className="size-3 opacity-60 hover:opacity-100" />
+                              )}
+                            </button>
+                          </span>
                         </td>
                         <td className="py-3 px-3 font-black text-[#266840]">
                           {b.tx_count} txs
@@ -1401,15 +1577,54 @@ export default function Dashboard() {
                     </p>
                     <div>
                       <span className="text-[#A06449] block text-[10px]">TX HASH</span>
-                      <span className="font-bold text-[#6A2E19] break-all">{selected.tx_hash}</span>
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-bold text-[#6A2E19] break-all">{selected.tx_hash}</span>
+                        <button
+                          onClick={() => handleCopy(selected.tx_hash, 'lineage_tx')}
+                          title="Copy transaction hash"
+                          className="p-1 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors shrink-0 cursor-pointer"
+                        >
+                          {copiedKey === 'lineage_tx' ? (
+                            <Check className="size-3.5 text-[#2F855A]" />
+                          ) : (
+                            <Copy className="size-3.5 opacity-60 hover:opacity-100" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <span className="text-[#A06449] block text-[10px]">SENDER</span>
-                      <span className="font-bold text-[#6A2E19] break-all">{selected.sender}</span>
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-bold text-[#6A2E19] break-all">{selected.sender}</span>
+                        <button
+                          onClick={() => handleCopy(selected.sender, 'lineage_sender')}
+                          title="Copy sender address"
+                          className="p-1 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors shrink-0 cursor-pointer"
+                        >
+                          {copiedKey === 'lineage_sender' ? (
+                            <Check className="size-3.5 text-[#2F855A]" />
+                          ) : (
+                            <Copy className="size-3.5 opacity-60 hover:opacity-100" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <span className="text-[#A06449] block text-[10px]">RECIPIENT</span>
-                      <span className="font-bold text-[#6A2E19] break-all">{selected.recipient}</span>
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-bold text-[#6A2E19] break-all">{selected.recipient}</span>
+                        <button
+                          onClick={() => handleCopy(selected.recipient, 'lineage_recipient')}
+                          title="Copy recipient address"
+                          className="p-1 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors shrink-0 cursor-pointer"
+                        >
+                          {copiedKey === 'lineage_recipient' ? (
+                            <Check className="size-3.5 text-[#2F855A]" />
+                          ) : (
+                            <Copy className="size-3.5 opacity-60 hover:opacity-100" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -1656,9 +1871,31 @@ export default function Dashboard() {
                                 >
                                   {bid.builder_id}
                                 </span>
+                                <button
+                                  onClick={() => handleCopy(bid.builder_id, `bid_${bid.id}_builder`)}
+                                  title="Copy builder ID"
+                                  className="p-0.5 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors cursor-pointer"
+                                >
+                                  {copiedKey === `bid_${bid.id}_builder` ? (
+                                    <Check className="size-3 text-[#2F855A]" />
+                                  ) : (
+                                    <Copy className="size-3 opacity-60 hover:opacity-100" />
+                                  )}
+                                </button>
                               </div>
-                              <div className="text-[10px] text-[#A06449] font-normal font-mono">
-                                Fee: {shortAddr(bid.fee_recipient)}
+                              <div className="text-[10px] text-[#A06449] font-normal font-mono flex items-center gap-1 mt-0.5">
+                                <span>Fee: {shortAddr(bid.fee_recipient)}</span>
+                                <button
+                                  onClick={() => handleCopy(bid.fee_recipient, `bid_${bid.id}_fee`)}
+                                  title="Copy fee recipient address"
+                                  className="p-0.5 text-[#8F4C30] hover:text-[#5C2B1A] transition-colors cursor-pointer"
+                                >
+                                  {copiedKey === `bid_${bid.id}_fee` ? (
+                                    <Check className="size-2.5 text-[#2F855A]" />
+                                  ) : (
+                                    <Copy className="size-2.5 opacity-60 hover:opacity-100" />
+                                  )}
+                                </button>
                               </div>
                             </td>
 
@@ -1788,8 +2025,35 @@ export default function Dashboard() {
           {/* Shortcuts */}
           <div className="flex items-center flex-wrap gap-2 text-xs font-bold text-[#7F442C]">
             <span className="text-xs uppercase tracking-wider text-[#A0644B]">TACTILE SHORTCUTS:</span>
-            <span className="px-2.5 py-1 rounded-xl bg-[#FFF6EB] border-2 border-[#8F4C30] font-mono text-[#542111] shadow-sm font-bold">[Space] Pause</span>
-            <span className="px-2.5 py-1 rounded-xl bg-[#FFF6EB] border-2 border-[#8F4C30] font-mono text-[#542111] shadow-sm font-bold">[/] Search</span>
+            <button
+              onClick={() => setIsPaused((prev) => !prev)}
+              className={`px-2.5 py-1 rounded-xl border-2 font-mono text-xs shadow-sm font-bold cursor-pointer hover:scale-[1.03] active:scale-95 transition-all flex items-center gap-1.5 ${
+                isPaused
+                  ? 'bg-[#FED7D7] text-[#9B2C2C] border-[#E53E3E]'
+                  : 'bg-[#FFF6EB] hover:bg-[#FFEBD6] border-[#8F4C30] text-[#542111]'
+              }`}
+              title="Press Space or click to toggle live auto-polling"
+            >
+              <span>{isPaused ? '⏸️ [Space] Paused' : '▶️ [Space] Live (Click to Pause)'}</span>
+            </button>
+            <button
+              onClick={() => {
+                searchInputRef.current?.focus();
+                searchInputRef.current?.select();
+              }}
+              className="px-2.5 py-1 rounded-xl bg-[#FFF6EB] hover:bg-[#FFEBD6] border-2 border-[#8F4C30] font-mono text-[#542111] shadow-sm font-bold cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              title="Press / or click to search"
+            >
+              [/] Search
+            </button>
+            <button
+              onClick={() => void fetchAll()}
+              className="px-2.5 py-1 rounded-xl bg-[#FFF6EB] hover:bg-[#FFEBD6] border-2 border-[#8F4C30] font-mono text-[#542111] shadow-sm font-bold cursor-pointer hover:scale-[1.03] active:scale-95 transition-all flex items-center gap-1"
+              title="Press R or click to refresh immediately"
+            >
+              <RefreshCw className="size-3 text-[#8F4C30]" />
+              <span>[R] Refresh</span>
+            </button>
           </div>
         </footer>
 
