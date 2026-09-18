@@ -114,7 +114,7 @@ Instructions:
             raise RuntimeError("Gemini client not initialized")
 
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
             contents=prompt,
         )
         narrative = response.text
@@ -183,7 +183,7 @@ Formatting Rules:
             raise RuntimeError("Gemini client not initialized")
 
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
             contents=prompt,
         )
         summary = response.text.strip()
