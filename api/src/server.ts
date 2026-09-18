@@ -88,6 +88,41 @@ fastify.post('/api/policy/activate', async (request, reply) => {
         return { error: 'policy_id is required' };
     }
 
+    const checkRes = await pool.query(
+        `SELECT policy_id, rules FROM compliance_policies WHERE policy_id = $1`,
+        [body.policy_id]
+    );
+    if (checkRes.rows.length === 0) {
+        reply.status(404);
+        return { error: `Policy '${body.policy_id}' not found` };
+    }
+
+    const rules = checkRes.rows[0].rules;
+    if (rules) {
+        if (typeof rules.flag_threshold === 'number' && rules.flag_threshold < 0) {
+            reply.status(400);
+            return { error: 'Invalid policy parameters: flag_threshold cannot be negative' };
+        }
+        if (typeof rules.block_threshold === 'number' && rules.block_threshold < 0) {
+            reply.status(400);
+            return { error: 'Invalid policy parameters: block_threshold cannot be negative' };
+        }
+        if (
+            typeof rules.flag_threshold === 'number' &&
+            typeof rules.block_threshold === 'number' &&
+            rules.flag_threshold > rules.block_threshold
+        ) {
+            reply.status(400);
+            return {
+                error: `Invalid policy parameters: flag_threshold (${rules.flag_threshold}) cannot exceed block_threshold (${rules.block_threshold})`,
+            };
+        }
+        if (typeof rules.max_hop_distance === 'number' && rules.max_hop_distance < 0) {
+            reply.status(400);
+            return { error: 'Invalid policy parameters: max_hop_distance cannot be negative' };
+        }
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -128,6 +163,46 @@ fastify.post('/api/policy/activate', async (request, reply) => {
         return { error: `Failed to activate policy: ${err.message || err}` };
     } finally {
         client.release();
+    }
+});
+
+fastify.get('/api/relay/bids', async (request, reply) => {
+    const result = await pool.query(
+        `SELECT id, slot, builder_id, block_hash, fee_recipient, value_wei, verdict, reasons, created_at
+         FROM relay_bids
+         ORDER BY slot DESC, created_at DESC
+         LIMIT 50`
+    ).catch(() => ({ rows: [] }));
+    return result.rows;
+});
+
+fastify.post('/api/admin/refresh', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    const expectedToken = process.env.ADMIN_SECRET_KEY || 'admin-dev-secret-key';
+    const token = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+    if (token !== expectedToken) {
+        reply.status(401);
+        return { error: 'Unauthorized: invalid or missing Bearer token' };
+    }
+
+    const engineUrl = process.env.ENGINE_URL || 'http://127.0.0.1:3001/screen';
+    const refreshUrl = engineUrl.replace(/\/screen$/, '/admin/refresh');
+
+    try {
+        const res = await fetch(refreshUrl, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${expectedToken}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const data = await res.json();
+        reply.status(res.status);
+        return data;
+    } catch (err: any) {
+        reply.status(502);
+        return { error: `Failed to contact engine admin refresh: ${err.message}` };
     }
 });
 
@@ -219,12 +294,12 @@ fastify.get('/api/demo/simulator-status', async (request, reply) => {
 });
 
 fastify.get('/api/stats', async (request, reply) => {
-    const decisions = await pool.query(
-        `SELECT decision, COUNT(*) FROM compliance_decisions GROUP BY decision`
-    );
-    const blocks = await pool.query(
-        `SELECT compliance_status, COUNT(*) FROM blocks GROUP BY compliance_status`
-    );
+    const decisions = await pool
+        .query(`SELECT decision, COUNT(*) FROM compliance_decisions GROUP BY decision`)
+        .catch(() => ({ rows: [] }));
+    const blocks = await pool
+        .query(`SELECT compliance_status, COUNT(*) FROM blocks GROUP BY compliance_status`)
+        .catch(() => ({ rows: [] }));
 
     const sanctionsCountResult = await pool
         .query(`SELECT COUNT(*) FROM address_attributions`)
@@ -285,7 +360,7 @@ function generateDecisionReportPdf(record: any, entityLabel: any): Promise<Buffe
             record.risk_score,
             record.policy_version || 'institution-standard-v1',
             record.sender.toLowerCase(),
-            record.recipient.toLowerCase(),
+            (record.recipient || 'none').toLowerCase(),
             record.counterparty_entity_type || 'None',
             record.exposure_hop_distance != null ? String(record.exposure_hop_distance) : 'None',
         ].join('|');

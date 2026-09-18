@@ -20,6 +20,13 @@ use tracing::{error as log_error, info as log_info, warn as log_warn};
 pub const SANCTIONS_SET_KEY: &str = "sanctioned_addresses";
 pub const CONTRACT_CREATION_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
+pub fn get_sanctions_env_key() -> String {
+    let env = std::env::var("APP_ENV")
+        .or_else(|_| std::env::var("NODE_ENV"))
+        .unwrap_or_else(|_| "prod".to_string());
+    format!("sanctions:{}", env)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn compute_decision_digest(
     tx_hash: &str,
@@ -27,10 +34,11 @@ pub fn compute_decision_digest(
     risk_score: i32,
     policy_version: &str,
     sender: &str,
-    recipient: &str,
+    recipient: Option<&str>,
     counterparty_entity_type: Option<&str>,
     exposure_hop_distance: Option<i32>,
 ) -> String {
+    let recipient_str = recipient.map_or("none".to_string(), |r| r.to_lowercase());
     let canonical = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}",
         tx_hash.to_lowercase(),
@@ -38,7 +46,7 @@ pub fn compute_decision_digest(
         risk_score,
         policy_version,
         sender.to_lowercase(),
-        recipient.to_lowercase(),
+        recipient_str,
         counterparty_entity_type.unwrap_or("None"),
         exposure_hop_distance.map_or("None".to_string(), |h| h.to_string()),
     );
@@ -86,6 +94,27 @@ pub struct PolicyParameters {
     pub require_vasp_attribution_above_usd: Option<f64>,
 }
 
+impl PolicyParameters {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.flag_threshold < 0 {
+            return Err("flag_threshold cannot be negative".to_string());
+        }
+        if self.block_threshold < 0 {
+            return Err("block_threshold cannot be negative".to_string());
+        }
+        if self.flag_threshold > self.block_threshold {
+            return Err(format!(
+                "flag_threshold ({}) cannot exceed block_threshold ({})",
+                self.flag_threshold, self.block_threshold
+            ));
+        }
+        if self.max_hop_distance < 0 {
+            return Err("max_hop_distance cannot be negative".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompliancePolicy {
     pub policy_id: String,
@@ -125,6 +154,8 @@ pub struct ScreenRequest {
     pub value: Option<u64>,
     #[serde(default)]
     pub policy: Option<String>,
+    #[serde(default)]
+    pub bundle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -147,7 +178,7 @@ pub struct ScreenResponse {
 pub struct DecisionRecord {
     pub tx_hash: String,
     pub sender: String,
-    pub recipient: String,
+    pub recipient: Option<String>,
     pub decision: String,
     pub risk_score: i32,
     pub reasons: Vec<String>,
@@ -155,6 +186,7 @@ pub struct DecisionRecord {
     pub counterparty_entity_type: Option<String>,
     pub exposure_hop_distance: Option<i32>,
     pub integrity_hash: Option<String>,
+    pub bundle_id: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -163,6 +195,8 @@ pub enum EngineError {
     InvalidAddress(String),
     #[error("Invalid transaction hash: {0}")]
     InvalidTxHash(String),
+    #[error("Invalid policy configuration: {0}")]
+    InvalidPolicy(String),
     #[error("Compliance provider error: {0}")]
     ProviderError(String),
     #[error("Storage error: {0}")]
@@ -174,6 +208,7 @@ impl IntoResponse for EngineError {
         let (status, err_code, err_msg) = match self {
             EngineError::InvalidAddress(msg) => (StatusCode::BAD_REQUEST, "INVALID_ADDRESS", msg),
             EngineError::InvalidTxHash(msg) => (StatusCode::BAD_REQUEST, "INVALID_TX_HASH", msg),
+            EngineError::InvalidPolicy(msg) => (StatusCode::BAD_REQUEST, "INVALID_POLICY", msg),
             EngineError::ProviderError(msg) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "PROVIDER_ERROR", msg)
             }
@@ -247,6 +282,10 @@ pub trait ComplianceDataProvider: Send + Sync {
         _policy_id_override: Option<&str>,
     ) -> Result<CompliancePolicy, EngineError> {
         Ok(CompliancePolicy::default())
+    }
+
+    async fn refresh_sanctions(&self) -> Result<usize, EngineError> {
+        Ok(0)
     }
 }
 
@@ -401,7 +440,7 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
         risk_score,
         &policy.policy_id,
         &sender_lower,
-        &recipient_for_audit,
+        Some(&recipient_for_audit),
         entity_type_str.as_deref(),
         exposure_hop_distance,
     );
@@ -420,7 +459,7 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
     let record = DecisionRecord {
         tx_hash: req.tx_hash.clone(),
         sender: sender_lower,
-        recipient: recipient_for_audit,
+        recipient: Some(recipient_for_audit),
         decision,
         risk_score,
         reasons,
@@ -428,6 +467,7 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
         counterparty_entity_type: entity_type_str,
         exposure_hop_distance,
         integrity_hash: Some(digest),
+        bundle_id: req.bundle_id.clone(),
     };
 
     if let Err(e) = provider.record_decision(&record).await {
@@ -583,9 +623,17 @@ impl ComplianceDataProvider for MockComplianceBackend {
             None => self.active_policy_id.read().unwrap().clone(),
         };
         if let Some(p) = policies.get(&target_id) {
+            p.parameters
+                .validate()
+                .map_err(EngineError::InvalidPolicy)?;
             Ok(p.clone())
         } else {
-            Ok(CompliancePolicy::default())
+            let default_policy = CompliancePolicy::default();
+            default_policy
+                .parameters
+                .validate()
+                .map_err(EngineError::InvalidPolicy)?;
+            Ok(default_policy)
         }
     }
 
@@ -596,6 +644,11 @@ impl ComplianceDataProvider for MockComplianceBackend {
         let mut list = self.decisions.write().unwrap();
         list.push(record.clone());
         Ok(())
+    }
+
+    async fn refresh_sanctions(&self) -> Result<usize, EngineError> {
+        let count = self.sanctioned.read().unwrap().len();
+        Ok(count)
     }
 }
 
@@ -616,17 +669,46 @@ impl LiveComplianceBackend {
             .fetch_all(&self.db)
             .await?;
 
-        if rows.is_empty() {
-            return Ok(0);
-        }
-
         let addresses: Vec<String> = rows.into_iter().map(|(a,)| a.to_lowercase()).collect();
         let count = addresses.len();
+        let env_key = get_sanctions_env_key();
 
-        let staging_key = format!("{}_staging_{}", SANCTIONS_SET_KEY, std::process::id());
-        let _: () = conn.del(&staging_key).await.unwrap_or(());
-        let _: () = conn.sadd(&staging_key, addresses).await?;
-        let _: () = conn.rename(&staging_key, SANCTIONS_SET_KEY).await?;
+        if count > 0 {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            let staging_key = format!("sanctions:v{}_{}", ts, std::process::id());
+
+            let _: () = conn.del(&staging_key).await.unwrap_or(());
+            let _: () = conn.sadd(&staging_key, &addresses).await?;
+
+            // Lua-atomic swap: staging -> env_key
+            let lua_script = r#"
+                redis.call('RENAME', KEYS[1], KEYS[2])
+                return 1
+            "#;
+            let _: i32 = redis::Script::new(lua_script)
+                .key(&staging_key)
+                .key(&env_key)
+                .invoke_async(&mut conn)
+                .await?;
+
+            // Maintain legacy SANCTIONS_SET_KEY
+            let staging_legacy = format!("{}_staging_{}", SANCTIONS_SET_KEY, std::process::id());
+            let _: () = conn.del(&staging_legacy).await.unwrap_or(());
+            let _: () = conn.sadd(&staging_legacy, &addresses).await?;
+            let _: () = conn.rename(&staging_legacy, SANCTIONS_SET_KEY).await?;
+        }
+
+        // Record update in sanctions_list_updates
+        let _ = sqlx::query(
+            "INSERT INTO sanctions_list_updates (source_name, address_count, status) VALUES ($1, $2, $3)"
+        )
+        .bind("0xB10C_OFAC_Mirror")
+        .bind(count as i32)
+        .bind("SUCCESS")
+        .execute(&self.db)
+        .await;
 
         Ok(count)
     }
@@ -670,6 +752,7 @@ impl LiveComplianceBackend {
 impl ComplianceDataProvider for LiveComplianceBackend {
     async fn is_sanctioned(&self, address: &str) -> Result<bool, EngineError> {
         let address_lower = address.to_lowercase();
+        let env_key = get_sanctions_env_key();
         let res =
             Self::retry_with_backoff(3, Duration::from_millis(50), "redis_sismember", || async {
                 let mut conn = self
@@ -677,6 +760,13 @@ impl ComplianceDataProvider for LiveComplianceBackend {
                     .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| e.to_string())?;
+                let in_env: bool = conn
+                    .sismember(&env_key, &address_lower)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if in_env {
+                    return Ok(true);
+                }
                 conn.sismember(SANCTIONS_SET_KEY, &address_lower)
                     .await
                     .map_err(|e| e.to_string())
@@ -795,16 +885,11 @@ impl ComplianceDataProvider for LiveComplianceBackend {
         .map_err(|e| EngineError::StorageError(format!("DB policy query failed: {e}")))?;
 
         if let Some((policy_id, name, description, rules_json)) = row {
-            let parameters: PolicyParameters =
-                serde_json::from_value(rules_json).unwrap_or(PolicyParameters {
-                    flag_threshold: 40,
-                    block_threshold: 70,
-                    max_hop_distance: 2,
-                    flag_mixers: true,
-                    flag_unregistered_vasp: false,
-                    strict_mode: true,
-                    require_vasp_attribution_above_usd: Some(10000.0),
-                });
+            let parameters: PolicyParameters = serde_json::from_value(rules_json)
+                .map_err(|e| EngineError::InvalidPolicy(format!("Failed to parse policy rules: {e}")))?;
+            parameters
+                .validate()
+                .map_err(EngineError::InvalidPolicy)?;
             Ok(CompliancePolicy {
                 policy_id,
                 name,
@@ -813,7 +898,12 @@ impl ComplianceDataProvider for LiveComplianceBackend {
                 parameters,
             })
         } else {
-            Ok(CompliancePolicy::default())
+            let default_policy = CompliancePolicy::default();
+            default_policy
+                .parameters
+                .validate()
+                .map_err(EngineError::InvalidPolicy)?;
+            Ok(default_policy)
         }
     }
 
@@ -824,16 +914,11 @@ impl ComplianceDataProvider for LiveComplianceBackend {
             "sql_insert_decision",
             || async {
                 sqlx::query(
-                    "INSERT INTO compliance_decisions (tx_hash, sender, recipient, decision, risk_score, reason_codes, policy_version, counterparty_entity_type, exposure_hop_distance, integrity_hash)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                     ON CONFLICT (tx_hash) DO UPDATE SET
-                        decision = EXCLUDED.decision,
-                        risk_score = EXCLUDED.risk_score,
-                        reason_codes = EXCLUDED.reason_codes,
-                        counterparty_entity_type = EXCLUDED.counterparty_entity_type,
-                        exposure_hop_distance = EXCLUDED.exposure_hop_distance,
-                        integrity_hash = EXCLUDED.integrity_hash",
+                    "INSERT INTO compliance_decisions (bundle_id, tx_hash, sender, recipient, decision, risk_score, reason_codes, policy_version, counterparty_entity_type, exposure_hop_distance, integrity_hash)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     ON CONFLICT (tx_hash) DO NOTHING",
                 )
+                .bind(&record.bundle_id)
                 .bind(&record.tx_hash)
                 .bind(&record.sender)
                 .bind(&record.recipient)
@@ -861,6 +946,12 @@ impl ComplianceDataProvider for LiveComplianceBackend {
             }
         }
     }
+
+    async fn refresh_sanctions(&self) -> Result<usize, EngineError> {
+        self.load_sanctions_into_redis()
+            .await
+            .map_err(|e| EngineError::ProviderError(format!("Failed to refresh sanctions: {e}")))
+    }
 }
 
 pub async fn screen_handler(
@@ -871,6 +962,7 @@ pub async fn screen_handler(
         tx_hash = %req.tx_hash,
         sender = %req.sender,
         recipient = ?req.recipient,
+        bundle_id = ?req.bundle_id,
         "Received screening request"
     );
 
@@ -887,6 +979,51 @@ pub async fn screen_handler(
     Ok(Json(resp))
 }
 
+pub async fn admin_refresh_handler(
+    headers: axum::http::HeaderMap,
+    State(provider): State<Arc<dyn ComplianceDataProvider>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let expected_token = std::env::var("ADMIN_SECRET_KEY")
+        .unwrap_or_else(|_| "admin-dev-secret-key".to_string());
+
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok());
+
+    let authorized = match auth_header {
+        Some(header) => {
+            let token = header.strip_prefix("Bearer ").unwrap_or(header).trim();
+            token == expected_token
+        }
+        None => false,
+    };
+
+    if !authorized {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "Unauthorized: invalid or missing Bearer token",
+                "code": "UNAUTHORIZED"
+            })),
+        ));
+    }
+
+    match provider.refresh_sanctions().await {
+        Ok(count) => Ok(Json(serde_json::json!({
+            "status": "success",
+            "message": "Sanctions list atomically refreshed",
+            "records_count": count
+        }))),
+        Err(err) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": err.to_string(),
+                "code": "REFRESH_ERROR"
+            })),
+        )),
+    }
+}
+
 pub async fn health_handler() -> &'static str {
     "OK"
 }
@@ -895,5 +1032,101 @@ pub fn create_app(provider: Arc<dyn ComplianceDataProvider>) -> Router {
     Router::new()
         .route("/screen", post(screen_handler))
         .route("/health", get(health_handler))
+        .route("/admin/refresh", post(admin_refresh_handler))
         .with_state(provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_policy_validation() {
+        let valid = PolicyParameters {
+            flag_threshold: 40,
+            block_threshold: 70,
+            max_hop_distance: 2,
+            flag_mixers: true,
+            flag_unregistered_vasp: false,
+            strict_mode: true,
+            require_vasp_attribution_above_usd: Some(10000.0),
+        };
+        assert!(valid.validate().is_ok());
+
+        let invalid_order = PolicyParameters {
+            flag_threshold: 80,
+            block_threshold: 70,
+            ..valid.clone()
+        };
+        assert!(invalid_order.validate().is_err());
+
+        let negative_flag = PolicyParameters {
+            flag_threshold: -5,
+            ..valid.clone()
+        };
+        assert!(negative_flag.validate().is_err());
+
+        let negative_hop = PolicyParameters {
+            max_hop_distance: -1,
+            ..valid
+        };
+        assert!(negative_hop.validate().is_err());
+    }
+
+    #[test]
+    fn test_compute_decision_digest_deterministic() {
+        let d1 = compute_decision_digest(
+            "0xabcdef",
+            "BLOCK",
+            100,
+            "v1",
+            "0x1111111111111111111111111111111111111111",
+            Some("0x2222222222222222222222222222222222222222"),
+            Some("Mixer"),
+            Some(1),
+        );
+        let d2 = compute_decision_digest(
+            "0xabcdef",
+            "BLOCK",
+            100,
+            "v1",
+            "0x1111111111111111111111111111111111111111",
+            Some("0x2222222222222222222222222222222222222222"),
+            Some("Mixer"),
+            Some(1),
+        );
+        assert_eq!(d1, d2);
+        assert_eq!(d1.len(), 64);
+
+        let d_none = compute_decision_digest(
+            "0xabcdef",
+            "BLOCK",
+            100,
+            "v1",
+            "0x1111111111111111111111111111111111111111",
+            None,
+            None,
+            None,
+        );
+        assert_ne!(d1, d_none);
+    }
+
+    #[test]
+    fn test_screen_request_deserialization() {
+        let json_with_bundle = r#"{
+            "tx_hash": "0x123",
+            "sender": "0x1111111111111111111111111111111111111111",
+            "bundle_id": "bundle-001"
+        }"#;
+        let req: ScreenRequest = serde_json::from_str(json_with_bundle).unwrap();
+        assert_eq!(req.bundle_id, Some("bundle-001".to_string()));
+        assert_eq!(req.recipient, None);
+
+        let json_without_bundle = r#"{
+            "tx_hash": "0x123",
+            "sender": "0x1111111111111111111111111111111111111111"
+        }"#;
+        let req2: ScreenRequest = serde_json::from_str(json_without_bundle).unwrap();
+        assert_eq!(req2.bundle_id, None);
+    }
 }
