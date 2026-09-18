@@ -77,6 +77,8 @@ jobs:
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/seed_entities.sql
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/seed_policies.sql
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/migrations/001_phase1_hardening.sql
+          PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/migrations/002_edd_cases.sql
+          PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/migrations/003_relay_ai_summary.sql
 
       - name: Run test suite (unit + live DB/Redis integration)
         env:

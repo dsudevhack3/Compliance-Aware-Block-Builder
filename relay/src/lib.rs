@@ -472,10 +472,7 @@ async fn list_bids_handler(
     Json(filtered)
 }
 
-pub fn select_best_compliant_header<'a>(
-    bids: &'a [StoredBid],
-    slot: u64,
-) -> Option<&'a StoredBid> {
+pub fn select_best_compliant_header<'a>(bids: &'a [StoredBid], slot: u64) -> Option<&'a StoredBid> {
     bids.iter()
         .filter(|b| b.slot == slot && b.verdict == BidVerdict::Compliant)
         .max_by_key(|b| b.value_wei_num)
@@ -888,4 +885,3 @@ mod tests {
         assert_eq!(valid[0].hash, "0xtx3_independent");
     }
 }
-

@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS relay_bids (
     value_wei NUMERIC NOT NULL,
     verdict TEXT NOT NULL,
     reasons JSONB,
+    ai_summary TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -106,3 +107,22 @@ CREATE INDEX IF NOT EXISTS idx_relay_bids_builder ON relay_bids(builder_id);
 
 -- Partial unique index ensuring only one active policy at a time
 CREATE UNIQUE INDEX IF NOT EXISTS idx_compliance_policies_active ON compliance_policies (is_active) WHERE is_active = TRUE;
+
+-- Enhanced Due Diligence (EDD) Cases
+CREATE TABLE IF NOT EXISTS edd_cases (
+    id BIGSERIAL PRIMARY KEY,
+    case_ref TEXT NOT NULL,
+    tx_hash TEXT,
+    bid_hash TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+    assignee TEXT,
+    note TEXT,
+    risk_score INT,
+    reasons JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    resolved_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_edd_cases_status ON edd_cases(status);
+CREATE INDEX IF NOT EXISTS idx_edd_cases_tx_hash ON edd_cases(tx_hash);
+CREATE INDEX IF NOT EXISTS idx_edd_cases_case_ref ON edd_cases(case_ref);
