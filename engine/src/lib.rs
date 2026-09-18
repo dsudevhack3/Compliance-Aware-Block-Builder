@@ -1357,7 +1357,11 @@ mod tests {
         let res = evaluate_transaction(&mock, &req).await.unwrap();
         assert_eq!(res.decision, "ALLOW");
         assert_eq!(res.exposure_hop_distance, None);
-        assert!(!res.reasons.iter().any(|r| r.contains("INDIRECT_RECIPIENT_EXPOSURE")));
+        assert!(
+            !res.reasons
+                .iter()
+                .any(|r| r.contains("INDIRECT_RECIPIENT_EXPOSURE"))
+        );
     }
 
     #[tokio::test]
@@ -1386,5 +1390,3 @@ mod tests {
         assert_eq!(decisions[1].tx_hash, "0xduplicate_hash_test");
     }
 }
-
-
