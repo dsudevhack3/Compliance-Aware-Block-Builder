@@ -972,8 +972,8 @@ pub async fn screen_handler(
     Json(req): Json<ScreenRequest>,
 ) -> Result<Json<ScreenResponse>, EngineError> {
     // 1. API Key Auth Check
-    let expected_key = std::env::var("ENGINE_API_KEY")
-        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+    let expected_key =
+        std::env::var("ENGINE_API_KEY").unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
     if !expected_key.is_empty() {
         let header_key = headers
             .get("x-engine-api-key")

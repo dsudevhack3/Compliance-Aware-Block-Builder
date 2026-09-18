@@ -102,8 +102,8 @@ async fn screen_transaction(
         recipient: Some(recipient.to_string()),
     };
 
-    let api_key = std::env::var("ENGINE_API_KEY")
-        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+    let api_key =
+        std::env::var("ENGINE_API_KEY").unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
 
     let resp = client
         .post(engine_url)
@@ -503,8 +503,8 @@ pub async fn run_scenario_5_concurrent(engine_url: &str) -> eyre::Result<()> {
     let client = reqwest::Client::new();
     let start_time = std::time::Instant::now();
 
-    let api_key = std::env::var("ENGINE_API_KEY")
-        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+    let api_key =
+        std::env::var("ENGINE_API_KEY").unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
 
     let mut handles = Vec::new();
     for spec in txs {

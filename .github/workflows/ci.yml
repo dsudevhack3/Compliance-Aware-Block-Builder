@@ -76,6 +76,7 @@ jobs:
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/seed_addresses.sql
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/seed_entities.sql
           PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/seed_policies.sql
+          PGPASSWORD=password psql -h localhost -U postgres -d compliance_builder -f ../db/migrations/001_phase1_hardening.sql
 
       - name: Run test suite (unit + live DB/Redis integration)
         env:
@@ -151,3 +152,27 @@ jobs:
 
       - name: Syntax and import compilation check
         run: python -m py_compile main.py
+
+  relay:
+    name: Relay Service (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy lint check
+        run: cargo clippy -- -D warnings
+
+      - name: Run test suite
+        run: cargo test
