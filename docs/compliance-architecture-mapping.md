@@ -1,16 +1,16 @@
-# Smart India Hackathon 2026: Problem Statement Mapping & Pitch Guide
+# Compliance Architecture & Regulatory Mapping Guide
 
-This document provides the definitive mapping between the **Compliance-Aware Block Builder** architecture and the official SIH 2026 problem statements:
-- **SIH26182**: Attribution of Crypto Wallet Addresses to Virtual Asset Service Providers (VASPs) / FATF Travel Rule.
-- **SIH26183**: Identification of Fraud-Linked and Privacy-Enhancing Exchanges / Wallets.
+This document provides the definitive mapping of the **Compliance-Aware Block Builder** architecture against institutional regulatory mandates:
+- **VASP Wallet Attribution**: Attribution of crypto wallet addresses to Virtual Asset Service Providers (VASPs) for FATF Travel Rule compliance.
+- **Fraud-Linked & Mixer Identification**: Identification of illicit addresses, privacy-enhancing mixers, and multi-hop counterparty taint propagation.
 
 ---
 
-## 1. Executive Problem Statement Matrix
+## 1. Regulatory Compliance Matrix
 
-| Metric / Dimension | Problem Statement SIH26182 (VASP Attribution) | Problem Statement SIH26183 (Fraud-Linked & Mixer ID) |
+| Dimension | VASP Attribution | Fraud-Linked & Mixer Identification |
 | :--- | :--- | :--- |
-| **Core Regulatory Challenge** | FATF Recommendation 16 ("Travel Rule") requiring financial institutions to identify originator and beneficiary VASPs for transfers exceeding $10,000 USD. | OFAC SDN sanctions enforcement and AML layering detection through obfuscation mixers and intermediary money mules. |
+| **Core Regulatory Mandate** | FATF Recommendation 16 ("Travel Rule") requiring financial institutions to identify originator and beneficiary VASPs for transfers exceeding $10,000 USD. | OFAC SDN sanctions enforcement and AML layering detection through obfuscation mixers and intermediary money mules. |
 | **System Entity Classification** | `Exchange` (e.g. Binance Hot Wallets, Coinbase Deposit, Kraken Custody) | `Mixer` (e.g. Tornado Cash 0.1/1/10/100 ETH pools) & `Direct Sanctions` |
 | **Detection Mechanism** | Labeled attribution dataset (`entity_labels`) with high-confidence cross-referencing and Travel Rule threshold evaluation. | $O(1)$ atomic Redis OFAC SDN cache + Bounded 2-hop recursive SQL graph walk with distance decay ($55 \to 25$). |
 | **Screening Outcome** | **`ALLOW`** with compliance reason code `VASP_COUNTERPARTY_IDENTIFIED` & Travel Rule audit trail. | **`BLOCK`** (Direct OFAC match, score 98) or **`FLAG`** (Mixer / 1-hop / 2-hop contagion, score 45–55). |
@@ -18,9 +18,9 @@ This document provides the definitive mapping between the **Compliance-Aware Blo
 
 ---
 
-## 2. In-Depth Architecture Mapping
+## 2. In-Depth Architecture Details
 
-### Problem Statement SIH26182: VASP Wallet Attribution
+### VASP Wallet Attribution
 
 #### The Problem
 Decentralized block builders cannot distinguish between anonymous pseudonymous peer-to-peer transfers and institutional transactions routed through regulated Virtual Asset Service Providers (VASPs). Without attribution, institutional builders risk non-compliance with FATF Travel Rule mandates when packaging large-value transactions.
@@ -40,7 +40,7 @@ Decentralized block builders cannot distinguish between anonymous pseudonymous p
 
 ---
 
-### Problem Statement SIH26183: Fraud-Linked & Mixer Identification
+### Fraud-Linked & Mixer Identification
 
 #### The Problem
 Bad actors rarely transact directly with known OFAC addresses when executing exploits or laundering illicit capital. Instead, they layer funds through anonymity enhancers (mixers like Tornado Cash) or pass funds through intermediary money-mule hops to evade simplistic 0-hop sanctions filters.
@@ -61,18 +61,18 @@ Bad actors rarely transact directly with known OFAC addresses when executing exp
 
 ---
 
-## 3. Judge Presentation Script & Demo Flow
+## 3. Evaluation Presentation Script & Demo Flow
 
 ### 30-Second Elevator Pitch
-> *"Judges, in today's Ethereum, block builders process billions in volume without knowing if they are facilitating illicit money laundering or violating international sanctions. We built the **Compliance-Aware Block Builder**—the first production-ready block building engine with deterministic pre-execution screening. For **SIH26182**, our engine provides real-time VASP wallet attribution for FATF Travel Rule compliance. For **SIH26183**, it identifies fraud-linked mixers and performs 2-hop graph walks with distance decay to catch layered money laundering. All decisions are evaluated deterministically in compiled Rust in under **3.8 microseconds** (over 390,000 transactions per second), sealed with SHA-256 cryptographic proofs, and explained asynchronously by AI."*
+> *"In today's Ethereum, block builders process billions in volume without knowing if they are facilitating illicit money laundering or violating international sanctions. We built the **Compliance-Aware Block Builder**—the first production-ready block building engine with deterministic pre-execution screening. Our engine provides real-time VASP wallet attribution for FATF Travel Rule compliance, identifies fraud-linked mixers, and performs 2-hop graph walks with distance decay to catch layered money laundering. All decisions are evaluated deterministically in compiled Rust in under **3.8 microseconds** (over 390,000 transactions per second), sealed with SHA-256 cryptographic proofs, and explained asynchronously by AI."*
 
 ### Live Demo Walkthrough Steps
 
-| Step | Action | What Judges See | Target SIH Problem |
+| Step | Action | What Observers See | Category |
 | :--- | :--- | :--- | :--- |
-| **1. VASP Transfer** | Screen transfer to Binance hot wallet (`0x28c6...1d60`). | Dashboard shows cyan `Exchange (VASP)` badge, reason `VASP_COUNTERPARTY_IDENTIFIED`, and cleared `ALLOW` status. | **SIH26182** |
-| **2. Fraud & Mixer ID** | Screen transfer to Tornado Cash 1 ETH pool (`0x47ce...2936`). | Evaluates to `FLAG` (risk 45), purple `Mixer` badge, and reason `INTERACTION_WITH_MIXER`. | **SIH26183** |
-| **3. 2-Hop Contagion** | Screen transfer from Hop-2 exposed address. | Evaluates with `2-Hop (Decay 25)` badge and reason `INDIRECT_SENDER_EXPOSURE_2HOP`. | **SIH26183** |
+| **1. VASP Transfer** | Screen transfer to Binance hot wallet (`0x28c6...1d60`). | Dashboard shows cyan `Exchange (VASP)` badge, reason `VASP_COUNTERPARTY_IDENTIFIED`, and cleared `ALLOW` status. | **VASP Attribution** |
+| **2. Fraud & Mixer ID** | Screen transfer to Tornado Cash 1 ETH pool (`0x47ce...2936`). | Evaluates to `FLAG` (risk 45), purple `Mixer` badge, and reason `INTERACTION_WITH_MIXER`. | **Mixer Identification** |
+| **3. 2-Hop Contagion** | Screen transfer from Hop-2 exposed address. | Evaluates with `2-Hop (Decay 25)` badge and reason `INDIRECT_SENDER_EXPOSURE_2HOP`. | **Contagion Graph Walk** |
 | **4. Policy Divergence** | Click policy switcher in top-right from **Standard (2-Hop)** to **Lenient (1-Hop)**. | Identical 1-hop transaction flips from `FLAG` to `ALLOW`, proving dynamic institutional governance. | **Core Innovation** |
 | **5. PDF Audit Export** | Click **"Download Audit Report (PDF)"**. | Generates tamper-evident PDF with transaction telemetry and SHA-256 cryptographic seal. | **Regulatory Evidence** |
 | **6. Empirical Benchmark** | Point to latency benchmarks. | **3.75 µs p99 latency** (0.00003% of 12s slot), **394,282 tx/sec throughput**. | **Production Viability** |
