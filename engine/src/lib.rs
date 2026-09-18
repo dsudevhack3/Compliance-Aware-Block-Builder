@@ -438,7 +438,12 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
                 .or(policy.parameters.require_vasp_attribution_above_usd)
                 .unwrap_or(10000.0);
 
-            let val_usd = req.value_usd.unwrap_or(0.0);
+            // Compute USD value: direct value_usd or on-chain wei converted via $3,000/ETH reference oracle
+            let val_usd = req.value_usd.unwrap_or_else(|| {
+                req.value
+                    .map(|v| (v as f64 / 1e18) * 3000.0)
+                    .unwrap_or(0.0)
+            });
             if val_usd > travel_thresh && req.vasp_metadata.is_none() {
                 reasons.push("FLAG:VASP_ATTRIBUTION_REQUIRED".to_string());
                 if decision != "BLOCK" {
