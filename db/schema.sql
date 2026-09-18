@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS compliance_decisions (
     integrity_hash VARCHAR(64),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     CONSTRAINT chk_decision CHECK (decision IN ('ALLOW', 'FLAG', 'BLOCK', 'REVIEW')),
-    CONSTRAINT chk_risk_score CHECK (risk_score >= 0 AND risk_score <= 100)
+    CONSTRAINT chk_risk_score CHECK (risk_score >= 0 AND risk_score <= 100),
+    CONSTRAINT uq_compliance_decisions_tx_hash UNIQUE (tx_hash)
 );
 
 CREATE TABLE IF NOT EXISTS blocks (
@@ -86,7 +87,7 @@ CREATE TABLE IF NOT EXISTS compliance_policies (
 
 -- Indices
 CREATE INDEX IF NOT EXISTS idx_compliance_decisions_created_at ON compliance_decisions(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_compliance_decisions_tx_hash ON compliance_decisions(tx_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_compliance_decisions_tx_hash ON compliance_decisions(tx_hash);
 CREATE INDEX IF NOT EXISTS idx_compliance_decisions_bundle_id ON compliance_decisions(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_compliance_decisions_sender ON compliance_decisions(LOWER(sender));
 CREATE INDEX IF NOT EXISTS idx_compliance_decisions_recipient ON compliance_decisions(LOWER(recipient));
