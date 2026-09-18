@@ -71,15 +71,16 @@ async fn main() -> eyre::Result<()> {
 
     let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
-    // Profile B1: Clean builder (reference: simulator default clean accounts) with 20 transactions, 2.0 ETH
-    let clean_sender = "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f";
-    let clean_recipient = "0xa0ee7a142d267c1f36714e4a8f75612f20a79720";
+    // Profile B1: Clean builder with 20 clean transactions, 2.0 ETH
+    let b1_sender = format!("0x{:08x}b100{:028x}", slot, 1);
+    let b1_recipient = format!("0x{:08x}b100{:028x}", slot, 2);
+    let b1_fee_recipient = format!("0x{:08x}b100{:028x}", slot, 0xfee);
     let mut b1_txs = Vec::new();
     for idx in 1..=20 {
         b1_txs.push(TxItem {
             hash: format!("0x{:016x}b1{:046x}", slot, idx),
-            sender: clean_sender.to_string(),
-            recipient: Some(clean_recipient.to_string()),
+            sender: b1_sender.clone(),
+            recipient: Some(b1_recipient.clone()),
             value: Some(100 * idx),
             bundle_id: None,
         });
@@ -93,12 +94,14 @@ async fn main() -> eyre::Result<()> {
         builder_id: "builder-b1-clean".to_string(),
         builder_pubkey: "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
             .to_string(),
-        fee_recipient: clean_recipient.to_string(),
+        fee_recipient: b1_fee_recipient,
         value_wei: "2000000000000000000".to_string(), // 2.0 ETH
         txs: b1_txs,
     };
 
     // Profile B2: Builder with 1 directly sanctioned transaction, 2.5 ETH
+    let b2_recipient = format!("0x{:08x}b200{:028x}", slot, 2);
+    let b2_fee_recipient = format!("0x{:08x}b200{:028x}", slot, 0xfee);
     let b2 = BidPayload {
         slot,
         block_hash: format!(
@@ -108,18 +111,19 @@ async fn main() -> eyre::Result<()> {
         builder_id: "builder-b2-sanctioned-tx".to_string(),
         builder_pubkey: "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
             .to_string(),
-        fee_recipient: clean_recipient.to_string(),
+        fee_recipient: b2_fee_recipient,
         value_wei: "2500000000000000000".to_string(), // 2.5 ETH
         txs: vec![TxItem {
             hash: format!("0x{:016x}b2{:046x}", slot, 1),
             sender: "0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b".to_string(), // OFAC Sanctioned address
-            recipient: Some(clean_recipient.to_string()),
+            recipient: Some(b2_recipient),
             value: Some(500),
             bundle_id: None,
         }],
     };
 
     // Profile B3: Builder interacting with Tornado Cash Mixer + Sanctioned fee recipient, 1.8 ETH
+    let b3_sender = format!("0x{:08x}b300{:028x}", slot, 1);
     let b3 = BidPayload {
         slot,
         block_hash: format!(
@@ -133,7 +137,7 @@ async fn main() -> eyre::Result<()> {
         value_wei: "1800000000000000000".to_string(),                            // 1.8 ETH
         txs: vec![TxItem {
             hash: format!("0x{:016x}b3{:046x}", slot, 1),
-            sender: clean_sender.to_string(),
+            sender: b3_sender,
             recipient: Some("0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc".to_string()), // Tornado Cash Mixer
             value: Some(1000),
             bundle_id: None,

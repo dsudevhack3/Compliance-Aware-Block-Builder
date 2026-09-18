@@ -251,6 +251,11 @@ function shortAddr(addr: string) {
   return `${addr.slice(0, 8)}...${addr.slice(-4)}`;
 }
 
+function formatReason(text: string) {
+  if (!text) return '';
+  return text.replace(/0x[a-fA-F0-9]{14,}/g, (match) => shortAddr(match));
+}
+
 export default function Dashboard() {
   const [decisions, setDecisions] = useState<Decision[]>(DEFAULT_SAMPLE_DECISIONS);
   const [blocks, setBlocks] = useState<Block[]>(DEFAULT_SAMPLE_BLOCKS);
@@ -1636,7 +1641,7 @@ export default function Dashboard() {
                             }`}
                           >
                             {/* Builder */}
-                            <td className="py-3.5 px-4 font-bold">
+                            <td className="py-3.5 px-4 font-bold align-top">
                               <div className="flex items-center gap-2">
                                 {isWinner && <span className="text-sm">🏆</span>}
                                 {isTainted && <span className="text-sm">⛔</span>}
@@ -1658,7 +1663,7 @@ export default function Dashboard() {
                             </td>
 
                             {/* Value */}
-                            <td className="py-3.5 px-4 font-black">
+                            <td className="py-3.5 px-4 font-black align-top">
                               <span
                                 className={`text-sm ${
                                   isWinner
@@ -1673,7 +1678,7 @@ export default function Dashboard() {
                             </td>
 
                             {/* Verdict */}
-                            <td className="py-3.5 px-4">
+                            <td className="py-3.5 px-4 align-top">
                               {isWinner ? (
                                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#1D5E38] text-xs font-black">
                                   ✓ COMPLIANT (WINNER)
@@ -1698,17 +1703,25 @@ export default function Dashboard() {
                             </td>
 
                             {/* Reasons */}
-                            <td className="py-3.5 px-4 max-w-xs">
+                            <td className="py-3.5 px-4 max-w-xs break-words align-top">
                               {bid.reasons && bid.reasons.length > 0 ? (
-                                <div className="space-y-1">
-                                  {bid.reasons.map((r, idx) => (
-                                    <span
-                                      key={idx}
-                                      className="inline-block px-2 py-0.5 text-[10px] rounded bg-red-100 border border-red-300 text-red-800 font-bold mr-1 mb-0.5"
-                                    >
-                                      {r}
-                                    </span>
-                                  ))}
+                                <div className="space-y-1.5">
+                                  {bid.reasons.length > 1 && (
+                                    <div className="text-[10px] font-extrabold uppercase tracking-wide text-red-700 flex items-center gap-1">
+                                      <span>⚠️ {bid.reasons.length} Violations / Flags</span>
+                                    </div>
+                                  )}
+                                  <div className="max-h-28 overflow-y-auto space-y-1 pr-1">
+                                    {bid.reasons.map((r, idx) => (
+                                      <div
+                                        key={idx}
+                                        title={r}
+                                        className="px-2 py-1 text-[10px] rounded bg-red-100 border border-red-300 text-red-800 font-semibold break-words [overflow-wrap:anywhere]"
+                                      >
+                                        {formatReason(r)}
+                                      </div>
+                                    ))}
+                                  </div>
                                 </div>
                               ) : (
                                 <span className="text-[11px] text-[#48BB78] font-bold">
@@ -1718,14 +1731,17 @@ export default function Dashboard() {
                             </td>
 
                             {/* AI Summary */}
-                            <td className="py-3.5 px-4 max-w-sm">
+                            <td className="py-3.5 px-4 max-w-sm break-words align-top">
                               {bid.ai_summary ? (
-                                <div className="text-[11px] text-[#5C2B1A] font-sans font-semibold leading-snug bg-[#FFF8EE] border border-[#ECD0B3] p-2 rounded-xl">
+                                <div
+                                  title={bid.ai_summary}
+                                  className="text-[11px] text-[#5C2B1A] font-sans font-semibold leading-snug bg-[#FFF8EE] border border-[#ECD0B3] p-2 rounded-xl break-words [overflow-wrap:anywhere]"
+                                >
                                   <div className="flex items-center gap-1 text-[10px] font-extrabold text-[#964724] uppercase mb-0.5">
-                                    <Sparkles className="size-3 text-amber-500" />
+                                    <Sparkles className="size-3 text-amber-500 shrink-0" />
                                     <span>Audit Note</span>
                                   </div>
-                                  {bid.ai_summary}
+                                  {formatReason(bid.ai_summary)}
                                 </div>
                               ) : (
                                 <span className="text-[11px] text-[#B58570] italic">
@@ -1847,9 +1863,10 @@ export default function Dashboard() {
                           c.reasons.map((r, i) => (
                             <span
                               key={i}
-                              className="px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 text-[10px] font-bold rounded"
+                              title={r}
+                              className="px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 text-[10px] font-bold rounded break-words [overflow-wrap:anywhere]"
                             >
-                              {r}
+                              {formatReason(r)}
                             </span>
                           ))}
                       </div>
