@@ -545,6 +545,11 @@ export default function Dashboard() {
     return `#${highest.toString().padStart(4, '0')}`;
   }, [blocks]);
 
+  const openEddCount = useMemo(
+    () => eddCases.filter((c) => c.status === 'OPEN').length,
+    [eddCases]
+  );
+
   return (
     <div className="min-h-screen bg-[#F8EAD4] text-[#5D2C1A] p-3 sm:p-6 lg:p-8 flex flex-col justify-between selection:bg-[#FFC570] selection:text-[#5D2C1A]">
       <div className="max-w-[1400px] w-full mx-auto flex flex-col gap-5">
@@ -768,35 +773,42 @@ export default function Dashboard() {
         </header>
 
         {/* Section 2: Active Policy & Navigation Strip */}
-        <section className="tactile-card bg-[#FCECD8] rounded-3xl p-3 md:px-5 md:py-3 flex flex-wrap items-center justify-between gap-3">
-          {/* Left: Active Policy & Hot-Set Badge */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="w-7 h-7 rounded-xl bg-[#E67D59] text-white flex items-center justify-center text-xs font-black shadow-sm">🛡️</span>
-            <span className="text-xs font-bold tracking-wider uppercase text-[#8D4B32]">Active Compliance Policy:</span>
-            <button
-              onClick={() => setIsPolicyModalOpen(true)}
-              title="Click to view or switch compliance policy"
-              className="px-3 py-1 rounded-xl bg-[#F6DFBE] hover:bg-[#EDCFAB] border-2 border-[#AC6F51] text-xs md:text-sm font-extrabold text-[#6A2E19] tracking-wide shadow-inner cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
-            >
-              {activePolicyId === 'institution-standard-v1' ? 'STANDARD INSTITUTIONAL (STRICT 2-HOP)' : 'LENIENT (1-HOP DIRECT ONLY)'}
-            </button>
+        <section className="tactile-card bg-[#FCECD8] rounded-3xl p-3.5 md:p-4 flex flex-col gap-3">
+          {/* Top Row: Active Policy & Status */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b-2 border-[#EAD0B7]">
+            <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+              <span className="w-7 h-7 rounded-xl bg-[#E67D59] text-white flex items-center justify-center text-xs font-black shadow-sm">🛡️</span>
+              <span className="text-xs font-bold tracking-wider uppercase text-[#8D4B32]">Active Compliance Policy:</span>
+              <button
+                onClick={() => setIsPolicyModalOpen(true)}
+                title="Click to view or switch compliance policy"
+                className="px-3 py-1 rounded-xl bg-[#F6DFBE] hover:bg-[#EDCFAB] border-2 border-[#AC6F51] text-xs md:text-sm font-extrabold text-[#6A2E19] tracking-wide shadow-inner cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                {activePolicyId === 'institution-standard-v1' ? 'STANDARD INSTITUTIONAL (STRICT 2-HOP)' : 'LENIENT (1-HOP DIRECT ONLY)'}
+              </button>
 
-            {/* 121 OFAC HOT-SET Pill */}
-            <button
-              onClick={() => setIsPolicyModalOpen(true)}
-              title="121 OFAC SDN sanctioned addresses loaded in deterministic cache. Click to open policy settings."
-              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#D8B4F8] hover:bg-[#CF9DF6] border-2 border-[#8F4C30] text-[#4A1D75] text-xs font-black shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
-            >
-              <span>💾</span>
-              <span>121 OFAC HOT-SET</span>
-            </button>
+              {/* 121 OFAC HOT-SET Pill */}
+              <button
+                onClick={() => setIsPolicyModalOpen(true)}
+                title="121 OFAC SDN sanctioned addresses loaded in deterministic cache. Click to open policy settings."
+                className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#D8B4F8] hover:bg-[#CF9DF6] border-2 border-[#8F4C30] text-[#4A1D75] text-xs font-black shadow-sm cursor-pointer hover:scale-[1.03] active:scale-95 transition-all"
+              >
+                <span>💾</span>
+                <span>121 OFAC HOT-SET</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs font-bold text-[#8C5238]">
+              <span className="w-2 h-2 rounded-full bg-[#48BB78] ping-slow" />
+              <span className="font-mono uppercase text-[11px] font-black">Pre-Execution Gate Active</span>
+            </div>
           </div>
 
-          {/* Right: 3 Nav Tabs */}
-          <div className="flex items-center flex-wrap gap-2.5 ml-auto">
+          {/* Bottom Row: 5 Core Navigation Tabs */}
+          <div className="flex items-center flex-wrap gap-2 sm:gap-2.5">
             <button
               onClick={() => setActiveTab('mempool')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
                 activeTab === 'mempool'
                   ? 'btn-3d btn-3d-amber text-white'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -807,7 +819,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('blocks')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
                 activeTab === 'blocks'
                   ? 'btn-3d btn-3d-primary text-white'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -818,7 +830,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('lineage')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
                 activeTab === 'lineage'
                   ? 'btn-3d bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#5C2B1A]'
                   : 'bg-[#FFF8EE] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF]'
@@ -829,7 +841,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('auction')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
                 activeTab === 'auction'
                   ? 'btn-3d bg-[#48BB78] border-2 border-[#1D5E38] text-white shadow-md'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -837,23 +849,21 @@ export default function Dashboard() {
             >
               <Trophy className="size-4 text-amber-300" />
               <span>Relay Auction</span>
-              {bestHeader && (
-                <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-[#1D5E38] text-white font-mono font-bold">
-                  Slot {selectedSlot}
-                </span>
-              )}
+              <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-[#1D5E38] text-white font-mono font-bold">
+                Slot {selectedSlot}
+              </span>
             </button>
 
             <button
               onClick={() => setIsEddDrawerOpen(true)}
-              className="px-3.5 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all shadow-sm"
+              className="px-3.5 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all shadow-sm cursor-pointer"
               title="Open Enhanced Due Diligence Review Queue"
             >
               <Shield className="size-4 text-orange-600" />
               <span>EDD Inbox</span>
-              {eddCases.filter((c) => c.status === 'OPEN').length > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-extrabold animate-pulse">
-                  {eddCases.filter((c) => c.status === 'OPEN').length}
+              {openEddCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-extrabold">
+                  {openEddCount}
                 </span>
               )}
             </button>
