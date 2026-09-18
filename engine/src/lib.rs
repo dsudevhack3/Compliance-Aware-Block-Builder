@@ -201,6 +201,10 @@ pub enum EngineError {
     ProviderError(String),
     #[error("Storage error: {0}")]
     StorageError(String),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
 }
 
 impl IntoResponse for EngineError {
@@ -214,6 +218,10 @@ impl IntoResponse for EngineError {
             }
             EngineError::StorageError(msg) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "STORAGE_ERROR", msg)
+            }
+            EngineError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
+            EngineError::RateLimitExceeded(msg) => {
+                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", msg)
             }
         };
 
@@ -953,10 +961,57 @@ impl ComplianceDataProvider for LiveComplianceBackend {
     }
 }
 
+// Atomic rate limiter tracking requests per 1-second window
+static RATE_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RATE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const MAX_SCREEN_RPS: u64 = 2500;
+
 pub async fn screen_handler(
     State(provider): State<Arc<dyn ComplianceDataProvider>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ScreenRequest>,
 ) -> Result<Json<ScreenResponse>, EngineError> {
+    // 1. API Key Auth Check
+    let expected_key = std::env::var("ENGINE_API_KEY")
+        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+    if !expected_key.is_empty() {
+        let header_key = headers
+            .get("x-engine-api-key")
+            .and_then(|v| v.to_str().ok());
+        let auth_header = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+
+        let key_matches = match header_key.or(auth_header) {
+            Some(k) => k == expected_key,
+            None => false,
+        };
+
+        if !key_matches {
+            return Err(EngineError::Unauthorized(
+                "Valid x-engine-api-key header required".to_string(),
+            ));
+        }
+    }
+
+    // 2. High-performance atomic rate limiting
+    let now_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let current_window = RATE_WINDOW.load(std::sync::atomic::Ordering::Relaxed);
+    if current_window != now_sec {
+        RATE_WINDOW.store(now_sec, std::sync::atomic::Ordering::Relaxed);
+        RATE_COUNT.store(1, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        let count = RATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count > MAX_SCREEN_RPS {
+            return Err(EngineError::RateLimitExceeded(
+                "Engine screening request threshold exceeded".to_string(),
+            ));
+        }
+    }
     log_info!(
         tx_hash = %req.tx_hash,
         sender = %req.sender,

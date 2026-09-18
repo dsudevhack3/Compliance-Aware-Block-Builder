@@ -1,7 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, status, Request
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import os
+import time
+import hmac
 from dotenv import load_dotenv
 from google import genai
 
@@ -9,13 +11,56 @@ load_dotenv()
 
 app = FastAPI(title="Compliance AI Explainer")
 
-gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+INTERNAL_SERVICE_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "dev-internal-secret-2026")
+
 client = None
-if gemini_api_key and gemini_api_key != "your-gemini-api-key-here":
+if GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here":
     try:
-        client = genai.Client(api_key=gemini_api_key)
+        client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"Warning: Failed to initialize Gemini client: {e}")
+
+# In-memory sliding window rate limiter: client_id -> list of request timestamps
+_rate_limits: dict[str, list[float]] = {}
+RATE_LIMIT_MAX_REQUESTS = 30
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+def verify_service_auth(
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+    authorization: Optional[str] = Header(None),
+):
+    provided = x_internal_secret
+    if not provided and authorization and authorization.startswith("Bearer "):
+        provided = authorization[7:].strip()
+
+    if not provided:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Valid X-Internal-Secret header required",
+        )
+
+    if not hmac.compare_digest(provided, INTERNAL_SERVICE_SECRET):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Invalid internal service secret",
+        )
+
+
+def check_rate_limit(client_id: str):
+    now = time.time()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    history = _rate_limits.setdefault(client_id, [])
+    # Prune old timestamps
+    _rate_limits[client_id] = [ts for ts in history if ts > cutoff]
+
+    if len(_rate_limits[client_id]) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded: Maximum {RATE_LIMIT_MAX_REQUESTS} requests per minute",
+        )
+    _rate_limits[client_id].append(now)
 
 
 class DecisionInput(BaseModel):
@@ -33,7 +78,17 @@ class ExplanationOutput(BaseModel):
 
 
 @app.post("/explain", response_model=ExplanationOutput)
-def explain_decision(input: DecisionInput):
+def explain_decision(
+    input: DecisionInput,
+    request: Request,
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
+    authorization: Optional[str] = Header(None),
+):
+    verify_service_auth(x_internal_secret=x_internal_secret, authorization=authorization)
+
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(client_ip)
+
     prompt = f"""You are an expert compliance narration assistant for an institutional blockchain transaction screening engine.
 You NEVER make decisions — a deterministic Rust policy engine has already executed policy rules. Your sole job is to
 provide a concise, factual, 1-2 sentence explanation suitable for a regulatory compliance audit log.
@@ -55,8 +110,11 @@ Instructions:
 - Do not speculate or recommend actions."""
 
     try:
+        if not client:
+            raise RuntimeError("Gemini client not initialized")
+
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             contents=prompt,
         )
         narrative = response.text
@@ -79,4 +137,8 @@ Instructions:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "gemini_configured": client is not None,
+        "auth_enforced": True,
+    }

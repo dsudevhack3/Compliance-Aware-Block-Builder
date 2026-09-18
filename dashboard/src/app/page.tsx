@@ -255,7 +255,10 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_URL}/api/policy/activate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': process.env.NEXT_PUBLIC_ADMIN_API_KEY || 'dev-admin-secret-2026',
+        },
         body: JSON.stringify({ policy_id: policyId }),
       });
       if (res.ok) {
@@ -357,46 +360,33 @@ export default function Dashboard() {
       <div className="max-w-[1400px] w-full mx-auto flex flex-col gap-5">
 
         {/* Top Header Card (Exact Match to Reference Screen) */}
-        <header className="tactile-card bg-[#FBF1E2] rounded-3xl p-4 md:p-5 flex flex-col gap-4">
-          {/* Top Row: Back Button and Main Title */}
+        {/* Top Header Card */}
+        <header className="tactile-card bg-[#FBF1E2] rounded-3xl p-4 md:p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center flex-wrap gap-4">
-              <Link
-                href="/"
-                className="btn-3d bg-[#DF7B59] hover:bg-[#D46E4C] text-white font-bold px-4 py-2.5 rounded-2xl flex items-center gap-2 tracking-wide text-xs sm:text-sm cursor-pointer shadow-sm"
-              >
-                <span className="text-xs bg-[#B85332] w-6 h-6 rounded-full inline-flex items-center justify-center shadow-inner">◀</span>
-                <span>BACK TO MISSION CONTROL</span>
-              </Link>
-
-              {/* Main Title Badge */}
-              <div className="flex items-center gap-3">
-                <div className="w-13 h-13 md:w-14 md:h-14 bg-[#FFC570] border-3 border-[#8F4C30] rounded-2xl flex items-center justify-center text-3xl shadow-[0_3px_0_#8F4C30] bobble-anim">
-                  🎾
+            {/* Left: Main Title Badge */}
+            <div className="flex items-center gap-3.5 md:gap-4">
+              <div className="w-12 h-12 md:w-14 md:h-14 bg-[#FFC570] border-3 border-[#8F4C30] rounded-2xl flex items-center justify-center text-2xl md:text-3xl shadow-[0_3px_0_#8F4C30] bobble-anim shrink-0">
+                🎾
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-wider text-[#6B2F1B]">
+                    COMPLIANCE ARCADE
+                  </h1>
+                  <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#22543D] text-xs font-bold shadow-sm">
+                    <span className="w-2 h-2 rounded-full bg-[#48BB78] ping-slow" />
+                    LIVE ARENA
+                  </span>
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-wider text-[#6B2F1B]">
-                      COMPLIANCE ARCADE
-                    </h1>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#22543D] text-xs font-bold shadow-sm">
-                      <span className="w-2 h-2 rounded-full bg-[#48BB78] ping-slow" />
-                      LIVE ARENA
-                    </span>
-                  </div>
-                  <p className="text-xs md:text-sm font-semibold text-[#9C5D41] flex items-center gap-2">
-                    <span>Deterministic Rust Pre-Execution Gate</span>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#C88E75]" />
-                    <span className="font-mono text-xs">VASP Attribution &amp; Fraud Identification</span>
-                  </p>
-                </div>
+                <p className="text-xs md:text-sm font-semibold text-[#9C5D41] flex items-center gap-2 mt-0.5 flex-wrap">
+                  <span>Deterministic Rust Pre-Execution Gate</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#C88E75]" />
+                  <span className="font-mono text-xs">VASP Attribution &amp; Fraud Identification</span>
+                </p>
               </div>
             </div>
-          </div>
 
-          {/* Second Row: Animated Mascot Cats Rally Widget & HUD Capsules */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t-2 border-[#EAD0B7]">
-            {/* Mascot Cats Playing Tennis Rally Widget */}
+            {/* Center: Animated Mascot Cats Rally Widget */}
             <div
               className="flex items-center justify-center px-3 py-1.5 bg-[#FFF8EE] rounded-2xl border-2 border-[#8F4C30] shadow-sm select-none relative overflow-hidden group hover:scale-[1.03] transition-transform duration-300"
               title="Chubby Cats Rally Practice"

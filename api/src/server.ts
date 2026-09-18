@@ -23,17 +23,84 @@ const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8000/
 
 const fastify = Fastify({ logger: true });
 
-// Restrict CORS origins in production, permit localhost/dev origins by default
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+    .split(',')
+    .map((o) => o.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+
+const allowedOriginsSet = new Set(allowedOrigins);
+
+// Strict CORS: Validate incoming Origin header against whitelist (no reflection/wildcards)
 await fastify.register(cors, {
-    origin: process.env.ALLOWED_ORIGINS
-        ? process.env.ALLOWED_ORIGINS.split(',')
-        : true,
+    origin: (origin, cb) => {
+        // Allow requests with no origin (mobile clients, curl, server-to-server)
+        if (!origin) {
+            cb(null, true);
+            return;
+        }
+        const normalized = origin.trim().replace(/\/$/, '');
+        if (allowedOriginsSet.has(normalized)) {
+            cb(null, true);
+        } else {
+            fastify.log.warn(`CORS rejected untrusted origin: ${origin}`);
+            cb(new Error(`Origin '${origin}' not permitted by CORS policy`), false);
+        }
+    },
+    credentials: true,
 });
 await fastify.register(websocket);
 
 const clients = new Set<any>();
 
-fastify.get('/ws', { websocket: true }, (socket) => {
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-admin-secret-2026';
+const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET || 'dev-internal-secret-2026';
+
+function verifyAdminAuth(request: any): boolean {
+    const headerKey = request.headers['x-admin-key'] as string | undefined;
+    const authHeader = request.headers['authorization'] as string | undefined;
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+
+    const providedKey = headerKey || bearerToken;
+    if (!providedKey) return false;
+
+    try {
+        const a = Buffer.from(providedKey);
+        const b = Buffer.from(ADMIN_API_KEY);
+        return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch {
+        return false;
+    }
+}
+
+// In-memory sliding-window rate limiter for sensitive endpoints
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(key: string, maxCount: number, windowMs: number): boolean {
+    const now = Date.now();
+    const entry = rateLimitMap.get(key);
+    if (!entry || now > entry.resetAt) {
+        rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
+        return true;
+    }
+    if (entry.count >= maxCount) {
+        return false;
+    }
+    entry.count += 1;
+    return true;
+}
+
+// Origin check on WebSocket connection to prevent cross-site streaming eavesdropping
+fastify.get('/ws', { websocket: true }, (socket, req) => {
+    const origin = req.headers.origin;
+    if (origin) {
+        const normalized = origin.trim().replace(/\/$/, '');
+        if (!allowedOriginsSet.has(normalized)) {
+            fastify.log.warn(`WebSocket connection rejected from disallowed origin: ${origin}`);
+            socket.close(1008, 'Origin not allowed');
+            return;
+        }
+    }
+
     clients.add(socket);
     fastify.log.info('Dashboard client connected');
 
@@ -82,6 +149,17 @@ fastify.get('/api/policies', async (request, reply) => {
 });
 
 fastify.post('/api/policy/activate', async (request, reply) => {
+    if (!verifyAdminAuth(request)) {
+        reply.status(401);
+        return { error: 'Unauthorized: Valid x-admin-key header required' };
+    }
+
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(`policy_${ip}`, 5, 60_000)) {
+        reply.status(429);
+        return { error: 'Too Many Requests: Maximum 5 policy activations per minute allowed' };
+    }
+
     const body = request.body as { policy_id?: string };
     if (!body || !body.policy_id) {
         reply.status(400);
@@ -224,7 +302,29 @@ function findSimulatorBinary(): { binaryPath: string; simulatorDir: string } | n
     return null;
 }
 
+let lastSimulatorRunTime = 0;
+const SIMULATOR_COOLDOWN_MS = 15_000;
+const SIMULATOR_TIMEOUT_MS = 60_000;
+
 fastify.post('/api/demo/run-simulator', async (request, reply) => {
+    if (!verifyAdminAuth(request)) {
+        reply.status(401);
+        return { error: 'Unauthorized: Valid x-admin-key header required to run simulator' };
+    }
+
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(`simulator_${ip}`, 4, 300_000)) {
+        reply.status(429);
+        return { error: 'Rate limit exceeded: Maximum 4 simulator runs per 5 minutes' };
+    }
+
+    const now = Date.now();
+    if (now - lastSimulatorRunTime < SIMULATOR_COOLDOWN_MS) {
+        const waitSec = Math.ceil((SIMULATOR_COOLDOWN_MS - (now - lastSimulatorRunTime)) / 1000);
+        reply.status(429);
+        return { error: `Simulator on cooldown — please wait ${waitSec}s before launching again` };
+    }
+
     if (simulatorChildProcess !== null && simulatorChildProcess.exitCode === null) {
         reply.status(409);
         return { error: 'A simulator demo run is already in progress' };
@@ -239,6 +339,7 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
     }
 
     try {
+        lastSimulatorRunTime = now;
         const child = spawn(binaryInfo.binaryPath, [], {
             cwd: binaryInfo.simulatorDir,
             env: {
@@ -246,6 +347,7 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
                 DATABASE_URL:
                     process.env.DATABASE_URL || 'postgres://shresthkumar@localhost:5432/compliance_builder',
                 ENGINE_URL: process.env.ENGINE_URL || 'http://127.0.0.1:3001/screen',
+                ENGINE_API_KEY: process.env.ENGINE_API_KEY || 'dev-engine-secret-2026',
                 ANVIL_RPC: process.env.ANVIL_RPC || 'http://127.0.0.1:8545',
             },
         });
@@ -254,6 +356,17 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
         fastify.log.info(
             `Spawned simulator demo process (PID: ${child.pid}) from ${binaryInfo.binaryPath}`
         );
+
+        // Automatic process timeout to prevent remote CPU burn / hanging
+        const killTimeout = setTimeout(() => {
+            if (simulatorChildProcess === child && child.exitCode === null) {
+                fastify.log.warn(`Simulator PID ${child.pid} exceeded timeout of ${SIMULATOR_TIMEOUT_MS}ms — terminating`);
+                child.kill('SIGTERM');
+                setTimeout(() => {
+                    if (child.exitCode === null) child.kill('SIGKILL');
+                }, 2000);
+            }
+        }, SIMULATOR_TIMEOUT_MS);
 
         child.stdout.on('data', (data) => {
             const text = data.toString().trim();
@@ -270,11 +383,13 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
         });
 
         child.on('close', (code) => {
+            clearTimeout(killTimeout);
             fastify.log.info(`Simulator process exited with code ${code}`);
             simulatorChildProcess = null;
         });
 
         child.on('error', (err) => {
+            clearTimeout(killTimeout);
             fastify.log.error(`Simulator spawn error: ${err.message}`);
             simulatorChildProcess = null;
         });
@@ -287,6 +402,7 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
         return { error: `Failed to launch simulator: ${err.message}` };
     }
 });
+
 
 fastify.get('/api/demo/simulator-status', async (request, reply) => {
     const isRunning = simulatorChildProcess !== null && simulatorChildProcess.exitCode === null;
@@ -516,7 +632,10 @@ async function generateExplanation(row: {
     try {
         const response = await fetch(AI_EXPLAINER_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Secret': INTERNAL_SERVICE_SECRET,
+            },
             body: JSON.stringify({
                 tx: row.tx_hash,
                 decision: row.decision,
@@ -615,11 +734,12 @@ setInterval(async () => {
 }, 500);
 
 const port = Number(process.env.PORT) || 3002;
+const host = process.env.HOST || '127.0.0.1';
 
-fastify.listen({ port, host: '0.0.0.0' }, (err) => {
+fastify.listen({ port, host }, (err) => {
     if (err) {
         fastify.log.error(err);
         process.exit(1);
     }
-    console.log(`Fastify orchestration layer listening on http://localhost:${port}`);
+    console.log(`Fastify orchestration layer listening on http://${host}:${port}`);
 });

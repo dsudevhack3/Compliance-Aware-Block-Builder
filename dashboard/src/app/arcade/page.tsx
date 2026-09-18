@@ -820,7 +820,12 @@ export default function ArcadePage() {
     playRetroBleep(523.25, 'triangle', 0.2);
 
     // Fire backend simulator in background
-    fetch(`${API_URL}/api/demo/run-simulator`, { method: 'POST' }).catch(() => {});
+    fetch(`${API_URL}/api/demo/run-simulator`, {
+      method: 'POST',
+      headers: {
+        'x-admin-key': process.env.NEXT_PUBLIC_ADMIN_API_KEY || 'dev-admin-secret-2026',
+      },
+    }).catch(() => {});
 
     // Spawn 6 canonical scenarios staggered 1.1s apart, exactly 6 balls numbered 1 to 6
     CANONICAL_SCENARIOS.forEach((scenario, i) => {
@@ -937,7 +942,10 @@ export default function ArcadePage() {
     try {
       const res = await fetch(`${API_URL}/api/policy/activate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': process.env.NEXT_PUBLIC_ADMIN_API_KEY || 'dev-admin-secret-2026',
+        },
         body: JSON.stringify({ policy_id: policyId }),
       });
       if (res.ok) {

@@ -102,7 +102,15 @@ async fn screen_transaction(
         recipient: Some(recipient.to_string()),
     };
 
-    let resp = client.post(engine_url).json(&req).send().await?;
+    let api_key = std::env::var("ENGINE_API_KEY")
+        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+
+    let resp = client
+        .post(engine_url)
+        .header("x-engine-api-key", api_key)
+        .json(&req)
+        .send()
+        .await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -495,10 +503,14 @@ pub async fn run_scenario_5_concurrent(engine_url: &str) -> eyre::Result<()> {
     let client = reqwest::Client::new();
     let start_time = std::time::Instant::now();
 
+    let api_key = std::env::var("ENGINE_API_KEY")
+        .unwrap_or_else(|_| "dev-engine-secret-2026".to_string());
+
     let mut handles = Vec::new();
     for spec in txs {
         let client_clone = client.clone();
         let url_clone = engine_url.to_string();
+        let key_clone = api_key.clone();
         let handle = tokio::spawn(async move {
             let req = serde_json::json!({
                 "tx_hash": spec.tx_hash,
@@ -506,7 +518,12 @@ pub async fn run_scenario_5_concurrent(engine_url: &str) -> eyre::Result<()> {
                 "recipient": spec.recipient,
             });
             let send_time = std::time::Instant::now();
-            let res = client_clone.post(&url_clone).json(&req).send().await;
+            let res = client_clone
+                .post(&url_clone)
+                .header("x-engine-api-key", key_clone)
+                .json(&req)
+                .send()
+                .await;
             (spec, res, send_time.elapsed())
         });
         handles.push(handle);
