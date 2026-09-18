@@ -4,7 +4,7 @@ import urllib.request
 import urllib.error
 import pytest
 
-AI_EXPLAINER_URL = os.getenv("AI_EXPLAINER_URL", "http://127.0.0.1:8001")
+AI_EXPLAINER_URL = os.getenv("AI_EXPLAINER_URL", "http://127.0.0.1:8000")
 API_URL = os.getenv("API_URL", "http://127.0.0.1:3002")
 
 def test_ai_explainer_block():

@@ -22,7 +22,7 @@ const pool = new Pool({
     idleTimeoutMillis: 30000,
 });
 
-const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8001/explain';
+const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8000/explain';
 const RELAY_URL = process.env.RELAY_URL || 'http://127.0.0.1:3003';
 
 
@@ -496,7 +496,7 @@ fastify.post('/api/demo/run-simulator', async (request, reply) => {
             env: {
                 ...process.env,
                 DATABASE_URL:
-                    process.env.DATABASE_URL || 'postgres://shresthkumar@localhost:5432/compliance_builder',
+                    process.env.DATABASE_URL || 'postgres://postgres:password@localhost:5432/compliance_builder',
                 ENGINE_URL: process.env.ENGINE_URL || 'http://127.0.0.1:3001/screen',
                 ENGINE_API_KEY: process.env.ENGINE_API_KEY || 'dev-engine-secret-2026',
                 ANVIL_RPC: process.env.ANVIL_RPC || 'http://127.0.0.1:8545',

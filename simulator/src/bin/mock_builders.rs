@@ -48,7 +48,8 @@ async fn main() -> eyre::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let mut slot: u64 = 12;
-    let mut relay_url = std::env::var("RELAY_URL").unwrap_or_else(|_| "http://127.0.0.1:3003".to_string());
+    let mut relay_url =
+        std::env::var("RELAY_URL").unwrap_or_else(|_| "http://127.0.0.1:3003".to_string());
 
     let mut i = 1;
     while i < args.len() {
@@ -68,9 +69,7 @@ async fn main() -> eyre::Result<()> {
     println!("  Target Slot:  {}", slot);
     println!("============================================================");
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
 
     // Profile B1: Clean builder (reference: simulator default clean accounts) with 20 transactions, 2.0 ETH
     let clean_sender = "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f";
@@ -87,9 +86,13 @@ async fn main() -> eyre::Result<()> {
     }
     let b1 = BidPayload {
         slot,
-        block_hash: format!("0x{:016x}b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", slot),
+        block_hash: format!(
+            "0x{:016x}b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+            slot
+        ),
         builder_id: "builder-b1-clean".to_string(),
-        builder_pubkey: "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1".to_string(),
+        builder_pubkey: "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+            .to_string(),
         fee_recipient: clean_recipient.to_string(),
         value_wei: "2000000000000000000".to_string(), // 2.0 ETH
         txs: b1_txs,
@@ -98,9 +101,13 @@ async fn main() -> eyre::Result<()> {
     // Profile B2: Builder with 1 directly sanctioned transaction, 2.5 ETH
     let b2 = BidPayload {
         slot,
-        block_hash: format!("0x{:016x}b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", slot),
+        block_hash: format!(
+            "0x{:016x}b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            slot
+        ),
         builder_id: "builder-b2-sanctioned-tx".to_string(),
-        builder_pubkey: "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2".to_string(),
+        builder_pubkey: "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+            .to_string(),
         fee_recipient: clean_recipient.to_string(),
         value_wei: "2500000000000000000".to_string(), // 2.5 ETH
         txs: vec![TxItem {
@@ -115,11 +122,15 @@ async fn main() -> eyre::Result<()> {
     // Profile B3: Builder interacting with Tornado Cash Mixer + Sanctioned fee recipient, 1.8 ETH
     let b3 = BidPayload {
         slot,
-        block_hash: format!("0x{:016x}b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3", slot),
+        block_hash: format!(
+            "0x{:016x}b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+            slot
+        ),
         builder_id: "builder-b3-mixer-bad-fee".to_string(),
-        builder_pubkey: "0xb3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3".to_string(),
+        builder_pubkey: "0xb3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3"
+            .to_string(),
         fee_recipient: "0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b".to_string(), // Sanctioned fee recipient
-        value_wei: "1800000000000000000".to_string(), // 1.8 ETH
+        value_wei: "1800000000000000000".to_string(),                            // 1.8 ETH
         txs: vec![TxItem {
             hash: format!("0x{:016x}b3{:046x}", slot, 1),
             sender: clean_sender.to_string(),

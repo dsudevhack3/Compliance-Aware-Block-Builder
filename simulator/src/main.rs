@@ -200,7 +200,7 @@ const COUNTER_CONTRACT_ADDRESS: &str = "0x5FbDB2315678afecb367f032d93F642f64180a
 async fn main() -> eyre::Result<()> {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://shresthkumar@localhost:5432/compliance_builder".to_string()
+        "postgres://postgres:password@localhost:5432/compliance_builder".to_string()
     });
     if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
         let _ = sqlx::query("DELETE FROM compliance_decisions WHERE tx_hash LIKE '0xsim%' OR tx_hash LIKE '0xstress%'")
