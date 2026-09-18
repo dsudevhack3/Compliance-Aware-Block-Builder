@@ -1919,10 +1919,10 @@ export default function ArcadePage() {
             {selectedTx && (
               <button
                 onClick={() => {
-                  alert(`Audit report downloaded for ${selectedTx.tx_hash}`);
+                  window.open(`${API_URL}/api/decisions/${selectedTx.tx_hash}/report`, '_blank');
                   playRetroBleep(880, 'sine', 0.15);
                 }}
-                className="btn-3d btn-3d-amber text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5"
+                className="btn-3d btn-3d-amber text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 cursor-pointer"
               >
                 <span>💾</span>
                 <span>DOWNLOAD AUDIT REPORT (PDF)</span>
