@@ -312,7 +312,7 @@ export default function Dashboard() {
       } else {
         setBestHeader(null);
       }
-      if (Array.isArray(edd)) {
+      if (Array.isArray(edd) && edd.length > 0) {
         setEddCases(edd);
       }
     } catch {
@@ -388,6 +388,16 @@ export default function Dashboard() {
       void fetchAll();
     }, 0);
 
+    let debounceTimer: NodeJS.Timeout | null = null;
+    const debouncedFetchAll = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (!isPausedRef.current) {
+          void fetchAll();
+        }
+      }, 400);
+    };
+
     let ws: WebSocket | null = null;
     try {
       ws = new WebSocket(WS_URL);
@@ -395,9 +405,7 @@ export default function Dashboard() {
       ws.onclose = () => setWsConnected(false);
       ws.onerror = () => setWsConnected(false);
       ws.onmessage = () => {
-        if (!isPausedRef.current) {
-          void fetchAll();
-        }
+        debouncedFetchAll();
       };
     } catch {
       // fallback
@@ -445,6 +453,7 @@ export default function Dashboard() {
 
     return () => {
       clearTimeout(timer);
+      if (debounceTimer) clearTimeout(debounceTimer);
       if (ws) ws.close();
       clearInterval(interval);
       window.removeEventListener('keydown', handleKeyDown);
@@ -808,7 +817,7 @@ export default function Dashboard() {
           <div className="flex items-center flex-wrap gap-2 sm:gap-2.5">
             <button
               onClick={() => setActiveTab('mempool')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'mempool'
                   ? 'btn-3d btn-3d-amber text-white'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -819,7 +828,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('blocks')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'blocks'
                   ? 'btn-3d btn-3d-primary text-white'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -830,7 +839,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('lineage')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'lineage'
                   ? 'btn-3d bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#5C2B1A]'
                   : 'bg-[#FFF8EE] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF]'
@@ -841,7 +850,7 @@ export default function Dashboard() {
 
             <button
               onClick={() => setActiveTab('auction')}
-              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-all cursor-pointer ${
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'auction'
                   ? 'btn-3d bg-[#48BB78] border-2 border-[#1D5E38] text-white shadow-md'
                   : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
@@ -856,13 +865,13 @@ export default function Dashboard() {
 
             <button
               onClick={() => setIsEddDrawerOpen(true)}
-              className="px-3.5 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all shadow-sm cursor-pointer"
+              className="px-3.5 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide bg-[#FFFDF9] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-colors shadow-sm cursor-pointer shrink-0"
               title="Open Enhanced Due Diligence Review Queue"
             >
-              <Shield className="size-4 text-orange-600" />
+              <Shield className="size-4 text-orange-600 shrink-0" />
               <span>EDD Inbox</span>
               {openEddCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-extrabold">
+                <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-extrabold shrink-0 inline-flex items-center justify-center">
                   {openEddCount}
                 </span>
               )}
