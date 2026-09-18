@@ -17,7 +17,7 @@ flowchart TD
 
     subgraph BuilderNode ["Compliance-Aware Block Builder (This System)"]
         Ingest["Bundle & Tx Ingestion Engine"]
-        RustScreen["Rust Engine Deterministic Screening\n(/screen)\n• Redis Atomic OFAC Cache (<1ms)\n• 2-Hop Graph Walk (<2ms)\n• VASP Attribution (SIH26182)"]
+        RustScreen["Rust Engine Deterministic Screening\n(/screen)\n• Redis Atomic OFAC Cache (<1ms)\n• 2-Hop Graph Walk (<2ms)\n• VASP Attribution (FATF Travel Rule)"]
         RevmDryRun["revm Dry-Run State Simulation\n• EVM Execution Check\n• Proposer Payment Validation"]
         Packing["Block Assembly & Knapsack Optimization\n• Deterministic Compliance Invariant\n• Fail-Closed Quorum"]
     end
@@ -73,7 +73,7 @@ To operate as a live Ethereum block builder, the builder node implements the sta
 | :--- | :--- | :--- | :--- | :--- |
 | **Sanctions Filtering** | Static OFAC list filtering (US addresses only) | Configurable regional compliance (Regulated vs Max Profit) | Non-filtering (prioritizes latency & raw MEV) | **Multi-tier deterministic rule engine** (OFAC, UK HMT, EU) |
 | **Multi-Hop Traversal** | None (Direct sender/recipient match only) | None | None | **Bounded 2-hop recursive SQL graph walk with distance decay (55 ➔ 25)** |
-| **Entity Classification (SIH26182)** | None | None | None | **Real-time VASP wallet attribution & Travel Rule threshold checking** |
+| **Entity Classification** | None | None | None | **Real-time VASP wallet attribution & Travel Rule threshold checking** |
 | **Policy Flexibility** | Hardcoded US OFAC constraints | Binary switch (compliant vs uncompliant) | No compliance policy | **Policy-as-Config JSON with live hot-swap via API & WebSocket telemetry** |
 | **Audit Evidence** | None (best-effort public logs) | Internal proprietary logs | None | **Cryptographically verifiable tamper-evident PDF audit reports (SHA-256 seal)** |
 | **Failure Mode** | Fail-open / fallback | Fail-open | Fail-open | **Strict Fail-Closed** (503 on cache or DB disruption refuses inclusion) |

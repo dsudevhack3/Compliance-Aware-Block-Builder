@@ -387,7 +387,7 @@ export default function Dashboard() {
                   <p className="text-xs md:text-sm font-semibold text-[#9C5D41] flex items-center gap-2">
                     <span>Deterministic Rust Pre-Execution Gate</span>
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C88E75]" />
-                    <span className="font-mono text-xs">SIH26182 VASP &amp; SIH26183 Fraud Identification</span>
+                    <span className="font-mono text-xs">VASP Attribution &amp; Fraud Identification</span>
                   </p>
                 </div>
               </div>

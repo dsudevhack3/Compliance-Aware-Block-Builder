@@ -2,33 +2,19 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import pg from 'pg';
-import crypto from 'node:crypto';
-import path from 'node:path';
-import fs from 'node:fs';
-import { spawn, ChildProcess } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import PDFDocument from 'pdfkit';
 import 'dotenv/config';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const { Pool } = pg;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://localhost:5432/compliance_builder',
+  connectionString: process.env.DATABASE_URL,
 });
 
 const AI_EXPLAINER_URL = process.env.AI_EXPLAINER_URL || 'http://127.0.0.1:8000/explain';
 
 const fastify = Fastify({ logger: true });
 
-// Restrict CORS origins in production, permit localhost/dev origins by default
-await fastify.register(cors, {
-  origin: process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
-    : true,
-});
+await fastify.register(cors, { origin: true });
 await fastify.register(websocket);
 
 const clients = new Set<any>();
@@ -53,8 +39,7 @@ function broadcast(data: unknown) {
 
 fastify.get('/api/decisions', async (request, reply) => {
   const result = await pool.query(
-    `SELECT tx_hash, sender, recipient, decision, risk_score, reason_codes, ai_explanation,
-            counterparty_entity_type, exposure_hop_distance, policy_version, integrity_hash, created_at
+    `SELECT tx_hash, sender, recipient, decision, risk_score, reason_codes, ai_explanation, created_at
      FROM compliance_decisions
      ORDER BY created_at DESC
      LIMIT 50`
@@ -72,145 +57,141 @@ fastify.get('/api/blocks', async (request, reply) => {
   return result.rows;
 });
 
-fastify.get('/api/policies', async (request, reply) => {
-  const result = await pool.query(
-    `SELECT policy_id, name, description, is_active, rules, updated_at
-     FROM compliance_policies
-     ORDER BY is_active DESC, policy_id ASC`
+fastify.get('/api/stats', async (request, reply) => {
+  const decisions = await pool.query(
+    `SELECT decision, COUNT(*) FROM compliance_decisions GROUP BY decision`
   );
-  return result.rows;
+  const blocks = await pool.query(
+    `SELECT compliance_status, COUNT(*) FROM blocks GROUP BY compliance_status`
+  );
+  return { decisions: decisions.rows, blocks: blocks.rows };
 });
 
-fastify.post('/api/policy/activate', async (request, reply) => {
-  const body = request.body as { policy_id?: string };
-  if (!body || !body.policy_id) {
-    reply.status(400);
-    return { error: 'policy_id is required' };
-  }
-
-  const client = await pool.connect();
+async function generateExplanation(row: {
+  tx_hash: string;
+  decision: string;
+  risk_score: number;
+  reason_codes: string[];
+}) {
   try {
-    await client.query('BEGIN');
-    await client.query('UPDATE compliance_policies SET is_active = FALSE');
-    const updateRes = await client.query(
-      `UPDATE compliance_policies
-       SET is_active = TRUE, updated_at = NOW()
-       WHERE policy_id = $1
-       RETURNING policy_id, name, description, rules`,
-      [body.policy_id]
-    );
-
-    if (updateRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      reply.status(404);
-      return { error: `Policy '${body.policy_id}' not found` };
-    }
-
-    await client.query('COMMIT');
-    const activePolicy = updateRes.rows[0];
-
-    fastify.log.info(`Active compliance policy switched to ${activePolicy.policy_id}`);
-    broadcast({
-      type: 'policy_changed',
-      data: {
-        policy_id: activePolicy.policy_id,
-        name: activePolicy.name,
-      },
+    const response = await fetch(AI_EXPLAINER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tx: row.tx_hash,
+        decision: row.decision,
+        risk_score: row.risk_score,
+        reasons: row.reason_codes,
+      }),
     });
 
-    return {
-      success: true,
-      active_policy: activePolicy,
-    };
-  } catch (err: any) {
-    await client.query('ROLLBACK');
-    reply.status(500);
-    return { error: `Failed to activate policy: ${err.message || err}` };
-  } finally {
-    client.release();
-  }
-});
-
-let simulatorChildProcess: ChildProcess | null = null;
-
-function findSimulatorBinary(): { binaryPath: string; simulatorDir: string } | null {
-  const candidateDirs = [
-    path.resolve(process.cwd(), '../simulator'),
-    path.resolve(process.cwd(), 'simulator'),
-    path.resolve(__dirname, '../../simulator'),
-    path.resolve(__dirname, '../simulator'),
-  ];
-  for (const dir of candidateDirs) {
-    const bin = path.join(dir, 'target/release/simulator');
-    if (fs.existsSync(bin)) {
-      return { binaryPath: bin, simulatorDir: dir };
+    if (!response.ok) {
+      fastify.log.error(`AI explainer returned ${response.status} for ${row.tx_hash}`);
+      return;
     }
+
+    const data = (await response.json()) as { narrative: string };
+
+    await pool.query(
+      `UPDATE compliance_decisions SET ai_explanation = $1 WHERE tx_hash = $2`,
+      [data.narrative, row.tx_hash]
+    );
+
+    fastify.log.info(`AI explanation saved for ${row.tx_hash}`);
+    broadcast({ type: 'explanation_ready', tx_hash: row.tx_hash, narrative: data.narrative });
+  } catch (err) {
+    fastify.log.error(`Failed to generate explanation for ${row.tx_hash}: ${err}`);
   }
-  return null;
 }
 
-fastify.post('/api/demo/run-simulator', async (request, reply) => {
-  if (simulatorChildProcess !== null && simulatorChildProcess.exitCode === null) {
-    reply.status(409);
-    return { error: 'A simulator demo run is already in progress' };
-  }
+let lastDecisionCount = 0;
+setInterval(async () => {
+  const countResult = await pool.query(`SELECT COUNT(*) FROM compliance_decisions`);
+  const currentCount = parseInt(countResult.rows[0].count, 10);
 
-  const binaryInfo = findSimulatorBinary();
-  if (!binaryInfo) {
-    reply.status(400);
-    return {
-      error: 'Simulator binary not found — run `cargo build --release --bin simulator` first',
-    };
-  }
+  if (currentCount !== lastDecisionCount) {
+    lastDecisionCount = currentCount;
 
-  try {
-    const child = spawn(binaryInfo.binaryPath, [], {
-      cwd: binaryInfo.simulatorDir,
-      env: {
-        ...process.env,
-        DATABASE_URL:
-          process.env.DATABASE_URL || 'postgres://shresthkumar@localhost:5432/compliance_builder',
-        ENGINE_URL: process.env.ENGINE_URL || 'http://127.0.0.1:3001/screen',
-        ANVIL_RPC: process.env.ANVIL_RPC || 'http://127.0.0.1:8545',
-      },
-    });
-
-    simulatorChildProcess = child;
-    fastify.log.info(
-      `Spawned simulator demo process (PID: ${child.pid}) from ${binaryInfo.binaryPath}`
+    const result = await pool.query(
+      `SELECT tx_hash, decision, risk_score, reason_codes, ai_explanation, created_at
+       FROM compliance_decisions
+       ORDER BY created_at DESC
+       LIMIT 1`
     );
 
-    child.stdout.on('data', (data) => {
-      const text = data.toString().trim();
-      if (text) {
-        fastify.log.info(`[simulator stdout] ${text}`);
+    if (result.rows.length > 0) {
+      const latest = result.rows[0];
+      broadcast({ type: 'new_decision', data: latest });
+
+      if ((latest.decision === 'BLOCK' || latest.decision === 'FLAG') && !latest.ai_explanation) {
+        generateExplanation(latest);
       }
-    });
-
-    child.stderr.on('data', (data) => {
-      const text = data.toString().trim();
-      if (text) {
-        fastify.log.warn(`[simulator stderr] ${text}`);
-      }
-    });
-
-    child.on('close', (code) => {
-      fastify.log.info(`Simulator process exited with code ${code}`);
-      simulatorChildProcess = null;
-    });
-
-    child.on('error', (err) => {
-      fastify.log.error(`Simulator spawn error: ${err.message}`);
-      simulatorChildProcess = null;
-    });
-
-    return { started: true };
-  } catch (err: any) {
-    simulatorChildProcess = null;
-    fastify.log.error(`Failed to launch simulator: ${err.message}`);
-    reply.status(500);
-    return { error: `Failed to launch simulator: ${err.message}` };
+    }
   }
+}, 2000);
+
+const port = Number(process.env.PORT) || 3002;
+
+fastify.listen({ port, host: '0.0.0.0' }, (err) => {
+  if (err) {
+    fastify.log.error(err);
+    process.exit(1);
+  }
+  console.log(`Fastify orchestration layer listening on http://localhost:${port}`);
+});
+return {
+  error: 'Simulator binary not found — run `cargo build --release --bin simulator` first',
+};
+  }
+
+try {
+  const child = spawn(binaryInfo.binaryPath, [], {
+    cwd: binaryInfo.simulatorDir,
+    env: {
+      ...process.env,
+      DATABASE_URL:
+        process.env.DATABASE_URL || 'postgres://shresthkumar@localhost:5432/compliance_builder',
+      ENGINE_URL: process.env.ENGINE_URL || 'http://127.0.0.1:3001/screen',
+      ANVIL_RPC: process.env.ANVIL_RPC || 'http://127.0.0.1:8545',
+    },
+  });
+
+  simulatorChildProcess = child;
+  fastify.log.info(
+    `Spawned simulator demo process (PID: ${child.pid}) from ${binaryInfo.binaryPath}`
+  );
+
+  child.stdout.on('data', (data) => {
+    const text = data.toString().trim();
+    if (text) {
+      fastify.log.info(`[simulator stdout] ${text}`);
+    }
+  });
+
+  child.stderr.on('data', (data) => {
+    const text = data.toString().trim();
+    if (text) {
+      fastify.log.warn(`[simulator stderr] ${text}`);
+    }
+  });
+
+  child.on('close', (code) => {
+    fastify.log.info(`Simulator process exited with code ${code}`);
+    simulatorChildProcess = null;
+  });
+
+  child.on('error', (err) => {
+    fastify.log.error(`Simulator spawn error: ${err.message}`);
+    simulatorChildProcess = null;
+  });
+
+  return { started: true };
+} catch (err: any) {
+  simulatorChildProcess = null;
+  fastify.log.error(`Failed to launch simulator: ${err.message}`);
+  reply.status(500);
+  return { error: `Failed to launch simulator: ${err.message}` };
+}
 });
 
 fastify.get('/api/demo/simulator-status', async (request, reply) => {
@@ -326,8 +307,7 @@ function generateDecisionReportPdf(record: any, entityLabel: any): Promise<Buffe
       ['Recipient Address:', record.recipient],
       [
         'Counterparty Classification:',
-        `${record.counterparty_entity_type || entityLabel?.entity_type || 'UnknownEOA'} ${
-          entityLabel?.entity_name ? `(${entityLabel.entity_name})` : ''
+        `${record.counterparty_entity_type || entityLabel?.entity_type || 'UnknownEOA'} ${entityLabel?.entity_name ? `(${entityLabel.entity_name})` : ''
         }`,
       ],
       [
@@ -377,7 +357,7 @@ function generateDecisionReportPdf(record: any, entityLabel: any): Promise<Buffe
       .text(`Integrity Verification: ${isAuthentic ? 'VERIFIED AUTHENTIC (Postgres audit record matches original engine seal)' : 'WARNING: TAMPER DETECTION - RECORD MISMATCH'}`, 50, y + 52);
     doc.fillColor('#64748b').fontSize(7.5).font('Helvetica')
       .text(
-        'Formula: sha256(tx_hash|decision|risk_score|policy|sender|recipient|entity|hop). Preserved for regulatory compliance under SIH26182 / SIH26183 standards.',
+        'Formula: sha256(tx_hash|decision|risk_score|policy|sender|recipient|entity|hop). Preserved for regulatory compliance and FATF Travel Rule standards.',
         50,
         y + 66,
         { width: doc.page.width - 100 }
@@ -480,7 +460,7 @@ async function generateExplanation(row: {
         `UPDATE compliance_decisions SET ai_explanation = $1 WHERE tx_hash = $2 AND ai_explanation IS NULL`,
         [`Narration unavailable (${reason})`, row.tx_hash]
       )
-      .catch(() => {});
+      .catch(() => { });
   }
 }
 
