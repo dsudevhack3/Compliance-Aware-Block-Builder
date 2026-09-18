@@ -17,7 +17,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error as log_error, info as log_info, warn as log_warn};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TxItem {
     #[serde(alias = "tx_hash")]
     pub hash: String,
@@ -28,6 +28,10 @@ pub struct TxItem {
     pub value: Option<serde_json::Value>,
     #[serde(default)]
     pub bundle_id: Option<String>,
+    #[serde(default)]
+    pub value_usd: Option<f64>,
+    #[serde(default)]
+    pub vasp_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +170,8 @@ pub fn create_relay_app(state: Arc<RelayState>) -> Router {
         .route("/relay/bids", get(list_bids_handler))
         .route("/relay/best_header", get(best_header_handler))
         .route("/relay/payload", get(payload_handler))
+        .route("/relay/slot/{slot}/export", get(export_slot_handler))
+        .route("/relay/export", get(export_slot_query_handler))
         .layer(cors)
         .with_state(state)
 }
@@ -275,6 +281,8 @@ async fn run_bid_audit(state: Arc<RelayState>, bid_id: String, bid: Bid) {
             value: None,
             policy: None,
             bundle_id: tx.bundle_id.clone(),
+            value_usd: tx.value_usd,
+            vasp_metadata: tx.vasp_metadata.clone(),
         })
         .collect();
 
@@ -313,6 +321,21 @@ async fn run_bid_audit(state: Arc<RelayState>, bid_id: String, bid: Bid) {
                         req.tx_hash,
                         screen.reasons.join(", ")
                     ));
+
+                    // Auto-create EDD case for flagged transaction
+                    let reasons_json = serde_json::to_value(&screen.reasons)
+                        .unwrap_or_else(|_| serde_json::json!([]));
+                    let _ = sqlx::query(
+                        "INSERT INTO edd_cases (case_ref, tx_hash, bid_hash, status, risk_score, reasons)
+                         VALUES ($1, $2, $3, 'OPEN', $4, $5)",
+                    )
+                    .bind(&req.tx_hash)
+                    .bind(&req.tx_hash)
+                    .bind(&bid.block_hash)
+                    .bind(screen.risk_score)
+                    .bind(reasons_json)
+                    .execute(&state.pool)
+                    .await;
                 }
             }
             Err(e) => {
@@ -519,6 +542,177 @@ async fn payload_handler(
         proposer_sig,
         txs: winner.txs.clone(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    pub slot: u64,
+}
+
+async fn export_slot_query_handler(
+    State(state): State<Arc<RelayState>>,
+    Query(q): Query<ExportQuery>,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    export_slot(state, q.slot).await
+}
+
+async fn export_slot_handler(
+    State(state): State<Arc<RelayState>>,
+    axum::extract::Path(slot): axum::extract::Path<u64>,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    export_slot(state, slot).await
+}
+
+async fn export_slot(
+    state: Arc<RelayState>,
+    slot: u64,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    let bids_lock = state.bids.read().await;
+    let slot_bids: Vec<StoredBid> = bids_lock
+        .iter()
+        .filter(|b| b.slot == slot)
+        .cloned()
+        .collect();
+
+    if slot_bids.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("No bids found for slot {}", slot)
+            })),
+        ));
+    }
+
+    let winning_bid = slot_bids
+        .iter()
+        .filter(|b| b.verdict == BidVerdict::Compliant)
+        .max_by_key(|b| b.value_wei_num);
+
+    let mut all_tx_hashes: Vec<String> = Vec::new();
+    for b in &slot_bids {
+        for tx in &b.txs {
+            all_tx_hashes.push(tx.hash.clone());
+        }
+    }
+    let merkle_root = compliance_engine::compute_merkle_root(&all_tx_hashes);
+
+    let active_policy = state
+        .provider
+        .get_active_policy(None)
+        .await
+        .unwrap_or_default();
+
+    let rules_json = serde_json::to_string(&active_policy.parameters).unwrap_or_default();
+    use sha2::{Digest, Sha256};
+    let rules_hash = hex::encode(Sha256::digest(rules_json.as_bytes()));
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let manifest = serde_json::json!({
+        "slot": slot,
+        "exported_at": now,
+        "merkle_root": merkle_root,
+        "policy_id": active_policy.policy_id,
+        "policy_version": active_policy.version,
+        "rules_hash": rules_hash,
+        "total_bids": slot_bids.len(),
+        "winning_builder": winning_bid.map(|w| w.builder_id.clone()),
+        "winning_block_hash": winning_bid.map(|w| w.block_hash.clone()),
+        "winning_value_wei": winning_bid.map(|w| w.value_wei.clone()),
+    });
+
+    let certificate_text = format!(
+        "================================================================================\n\
+         COMPLIANCE-AWARE BLOCK BUILDER — INSTITUTIONAL AUDIT EXPORT\n\
+         ================================================================================\n\
+         Slot:               {}\n\
+         Export Timestamp:   {}\n\
+         Active Policy ID:   {}\n\
+         Policy Version:     {}\n\
+         Rules Hash:         {}\n\
+         Slot Merkle Root:   {}\n\
+         Total Bids Screened: {}\n\
+         Winning Builder:    {}\n\
+         Winning Block Hash: {}\n\
+         Winning Value (wei): {}\n\
+         Cryptographic Seal: HMAC-SHA256 (AUDIT_HMAC_SECRET)\n\
+         ================================================================================\n",
+        slot,
+        now,
+        active_policy.policy_id,
+        active_policy.version,
+        rules_hash,
+        merkle_root,
+        slot_bids.len(),
+        winning_bid.map(|w| w.builder_id.as_str()).unwrap_or("NONE"),
+        winning_bid.map(|w| w.block_hash.as_str()).unwrap_or("NONE"),
+        winning_bid.map(|w| w.value_wei.as_str()).unwrap_or("0")
+    );
+
+    use std::io::Write;
+    let mut zip_buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip_writer = zip::ZipWriter::new(&mut zip_buffer);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        zip_writer
+            .start_file("manifest.json", options)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to create manifest: {e}") })),
+                )
+            })?;
+        zip_writer
+            .write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
+            .unwrap();
+
+        zip_writer.start_file("bids.json", options).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to create bids.json: {e}") })),
+            )
+        })?;
+        zip_writer
+            .write_all(serde_json::to_string_pretty(&slot_bids).unwrap().as_bytes())
+            .unwrap();
+
+        zip_writer.start_file("compliance_certificate.txt", options).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to create certificate: {e}") })),
+            )
+        })?;
+        zip_writer.write_all(certificate_text.as_bytes()).unwrap();
+
+        zip_writer.finish().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to finalize zip: {e}") })),
+            )
+        })?;
+    }
+
+    let zip_bytes = zip_buffer.into_inner();
+    let filename = format!(
+        "attachment; filename=\"slot-{}-compliance-export.zip\"",
+        slot
+    );
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/zip")
+        .header("Content-Disposition", filename)
+        .body(axum::body::Body::from(zip_bytes))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Failed to build response: {e}") })),
+            )
+        })?;
+
+    Ok(response)
 }
 
 #[cfg(test)]

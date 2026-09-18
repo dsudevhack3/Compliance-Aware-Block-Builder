@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use hmac::{Hmac, Mac};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +20,14 @@ use tracing::{error as log_error, info as log_info, warn as log_warn};
 
 pub const SANCTIONS_SET_KEY: &str = "sanctioned_addresses";
 pub const CONTRACT_CREATION_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+type HmacSha256 = Hmac<Sha256>;
+
+pub fn get_audit_hmac_secret() -> String {
+    std::env::var("AUDIT_HMAC_SECRET")
+        .or_else(|_| std::env::var("AUDIT_SECRET_KEY"))
+        .unwrap_or_else(|_| "compliance-audit-secret-2026".to_string())
+}
 
 pub fn get_sanctions_env_key() -> String {
     let env = std::env::var("APP_ENV")
@@ -38,6 +47,7 @@ pub fn compute_decision_digest(
     counterparty_entity_type: Option<&str>,
     exposure_hop_distance: Option<i32>,
 ) -> String {
+    let secret = get_audit_hmac_secret();
     let recipient_str = recipient.map_or("none".to_string(), |r| r.to_lowercase());
     let canonical = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}",
@@ -50,9 +60,41 @@ pub fn compute_decision_digest(
         counterparty_entity_type.unwrap_or("None"),
         exposure_hop_distance.map_or("None".to_string(), |h| h.to_string()),
     );
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    hex::encode(hasher.finalize())
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    mac.update(canonical.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Computes a binary Merkle tree root over hex-encoded transaction digests.
+pub fn compute_merkle_root(hashes: &[String]) -> String {
+    if hashes.is_empty() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"EMPTY_MERKLE_ROOT");
+        return hex::encode(hasher.finalize());
+    }
+
+    let mut current_level: Vec<Vec<u8>> = hashes
+        .iter()
+        .map(|h| hex::decode(h).unwrap_or_else(|_| Sha256::digest(h.as_bytes()).to_vec()))
+        .collect();
+
+    while current_level.len() > 1 {
+        let mut next_level = Vec::new();
+        for chunk in current_level.chunks(2) {
+            let mut hasher = Sha256::new();
+            hasher.update(&chunk[0]);
+            if chunk.len() > 1 {
+                hasher.update(&chunk[1]);
+            } else {
+                hasher.update(&chunk[0]);
+            }
+            next_level.push(hasher.finalize().to_vec());
+        }
+        current_level = next_level;
+    }
+
+    hex::encode(&current_level[0])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +134,8 @@ pub struct PolicyParameters {
     pub flag_unregistered_vasp: bool,
     pub strict_mode: bool,
     pub require_vasp_attribution_above_usd: Option<f64>,
+    #[serde(default)]
+    pub travel_threshold: Option<f64>,
 }
 
 impl PolicyParameters {
@@ -139,12 +183,13 @@ impl Default for CompliancePolicy {
                 flag_unregistered_vasp: false,
                 strict_mode: true,
                 require_vasp_attribution_above_usd: Some(10000.0),
+                travel_threshold: Some(10000.0),
             },
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ScreenRequest {
     pub tx_hash: String,
     pub sender: String,
@@ -156,6 +201,10 @@ pub struct ScreenRequest {
     pub policy: Option<String>,
     #[serde(default)]
     pub bundle_id: Option<String>,
+    #[serde(default)]
+    pub value_usd: Option<f64>,
+    #[serde(default)]
+    pub vasp_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -379,9 +428,27 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
             }
         }
 
-        // VASP counterparty attribution check
+        // VASP counterparty attribution check & Travel Rule
         if entity_type == EntityType::Exchange {
             reasons.push("VASP_COUNTERPARTY_IDENTIFIED".to_string());
+
+            let travel_thresh = policy
+                .parameters
+                .travel_threshold
+                .or(policy.parameters.require_vasp_attribution_above_usd)
+                .unwrap_or(10000.0);
+
+            let val_usd = req.value_usd.unwrap_or(0.0);
+            if val_usd > travel_thresh && req.vasp_metadata.is_none() {
+                reasons.push("FLAG:VASP_ATTRIBUTION_REQUIRED".to_string());
+                if decision != "BLOCK" {
+                    decision = "FLAG".to_string();
+                    let min_flag_score = policy.parameters.flag_threshold.max(60);
+                    if risk_score < min_flag_score {
+                        risk_score = min_flag_score;
+                    }
+                }
+            }
         }
 
         // Direct match wins. Only evaluate indirect exposure if direct check passed.
@@ -940,6 +1007,21 @@ impl ComplianceDataProvider for LiveComplianceBackend {
                 .await
                 .map_err(|e: sqlx::Error| e.to_string())?;
 
+                if record.decision == "FLAG" {
+                    let reasons_json = serde_json::to_value(&record.reasons)
+                        .unwrap_or_else(|_| serde_json::json!([]));
+                    let _ = sqlx::query(
+                        "INSERT INTO edd_cases (case_ref, tx_hash, status, risk_score, reasons)
+                         VALUES ($1, $2, 'OPEN', $3, $4)",
+                    )
+                    .bind(&record.tx_hash)
+                    .bind(&record.tx_hash)
+                    .bind(record.risk_score)
+                    .bind(reasons_json)
+                    .execute(&self.db)
+                    .await;
+                }
+
                 Ok(())
             },
         )
@@ -1104,6 +1186,7 @@ mod tests {
             flag_unregistered_vasp: false,
             strict_mode: true,
             require_vasp_attribution_above_usd: Some(10000.0),
+            travel_threshold: Some(10000.0),
         };
         assert!(valid.validate().is_ok());
 
@@ -1178,9 +1261,42 @@ mod tests {
 
         let json_without_bundle = r#"{
             "tx_hash": "0x123",
-            "sender": "0x1111111111111111111111111111111111111111"
+            "sender": "0x1111111111111111111111111111111111111111",
+            "value_usd": 15000.5
         }"#;
         let req2: ScreenRequest = serde_json::from_str(json_without_bundle).unwrap();
         assert_eq!(req2.bundle_id, None);
+        assert_eq!(req2.value_usd, Some(15000.5));
+    }
+
+    #[test]
+    fn test_compute_merkle_root() {
+        let empty_root = compute_merkle_root(&[]);
+        assert_eq!(empty_root.len(), 64);
+
+        let h1 = compute_decision_digest(
+            "0x1",
+            "ALLOW",
+            0,
+            "v1",
+            "0x1111111111111111111111111111111111111111",
+            None,
+            None,
+            None,
+        );
+        let h2 = compute_decision_digest(
+            "0x2",
+            "FLAG",
+            60,
+            "v1",
+            "0x2222222222222222222222222222222222222222",
+            None,
+            None,
+            None,
+        );
+        let root1 = compute_merkle_root(&[h1.clone(), h2.clone()]);
+        let root2 = compute_merkle_root(&[h1, h2]);
+        assert_eq!(root1, root2);
+        assert_eq!(root1.len(), 64);
     }
 }
