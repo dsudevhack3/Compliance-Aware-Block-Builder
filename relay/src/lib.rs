@@ -472,7 +472,7 @@ async fn list_bids_handler(
     Json(filtered)
 }
 
-pub fn select_best_compliant_header<'a>(bids: &'a [StoredBid], slot: u64) -> Option<&'a StoredBid> {
+pub fn select_best_compliant_header(bids: &[StoredBid], slot: u64) -> Option<&StoredBid> {
     bids.iter()
         .filter(|b| b.slot == slot && b.verdict == BidVerdict::Compliant)
         .max_by_key(|b| b.value_wei_num)
@@ -488,10 +488,11 @@ pub fn filter_valid_transactions(
             if blocked_txs.contains(&t.hash) {
                 return false;
             }
-            if let Some(bundle_id) = &t.bundle_id {
-                if dead_bundles.contains(bundle_id) {
-                    return false;
-                }
+            if t.bundle_id
+                .as_ref()
+                .is_some_and(|b| dead_bundles.contains(b))
+            {
+                return false;
             }
             true
         })
