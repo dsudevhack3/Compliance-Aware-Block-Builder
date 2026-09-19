@@ -205,8 +205,6 @@ pub struct ScreenRequest {
     pub value_usd: Option<f64>,
     #[serde(default)]
     pub vasp_metadata: Option<serde_json::Value>,
-    #[serde(default)]
-    pub identity_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -345,6 +343,10 @@ pub trait ComplianceDataProvider: Send + Sync {
 
     async fn refresh_sanctions(&self) -> Result<usize, EngineError> {
         Ok(0)
+    }
+
+    async fn check_identity_eligibility(&self, _address: &str) -> Result<Option<bool>, EngineError> {
+        Ok(None)
     }
 }
 
@@ -496,13 +498,15 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
         Some(recipient_lower)
     };
 
-    // Evaluate on-chain identity credential eligibility
-    if let Some(true) = req.identity_verified {
-        reasons.push("ONCHAIN_IDENTITY_VERIFIED".to_string());
-    } else if let Some(false) = req.identity_verified {
-        reasons.push("UNVERIFIED_SENDER_REVERT_RISK".to_string());
-        if risk_score < policy.parameters.flag_threshold {
-            risk_score = policy.parameters.flag_threshold;
+    // Authoritative on-chain identity credential eligibility check
+    if let Ok(Some(is_eligible)) = provider.check_identity_eligibility(&sender_lower).await {
+        if is_eligible {
+            reasons.push("ONCHAIN_IDENTITY_VERIFIED".to_string());
+        } else {
+            reasons.push("UNVERIFIED_SENDER_REVERT_RISK".to_string());
+            if risk_score < policy.parameters.flag_threshold {
+                risk_score = policy.parameters.flag_threshold;
+            }
         }
     }
 
@@ -579,6 +583,7 @@ pub struct MockComplianceBackend {
     pub policies: RwLock<HashMap<String, CompliancePolicy>>,
     pub active_policy_id: RwLock<String>,
     pub decisions: RwLock<Vec<DecisionRecord>>,
+    pub identity_eligibility: RwLock<HashMap<String, bool>>,
     pub fail_sanctions: AtomicBool,
     pub fail_indirect: AtomicBool,
     pub fail_record: AtomicBool,
@@ -594,6 +599,7 @@ impl MockComplianceBackend {
             policies: RwLock::new(HashMap::new()),
             active_policy_id: RwLock::new("institution-standard-v1".to_string()),
             decisions: RwLock::new(Vec::new()),
+            identity_eligibility: RwLock::new(HashMap::new()),
             fail_sanctions: AtomicBool::new(false),
             fail_indirect: AtomicBool::new(false),
             fail_record: AtomicBool::new(false),
@@ -644,6 +650,14 @@ impl MockComplianceBackend {
         self
     }
 
+    pub fn with_identity_eligibility(self, address: &str, eligible: bool) -> Self {
+        {
+            let mut map = self.identity_eligibility.write().unwrap();
+            map.insert(address.to_lowercase(), eligible);
+        }
+        self
+    }
+
     pub fn set_active_policy(&self, policy_id: &str) {
         let mut active = self.active_policy_id.write().unwrap();
         *active = policy_id.to_string();
@@ -658,6 +672,10 @@ impl Default for MockComplianceBackend {
 
 #[async_trait]
 impl ComplianceDataProvider for MockComplianceBackend {
+    async fn check_identity_eligibility(&self, address: &str) -> Result<Option<bool>, EngineError> {
+        let map = self.identity_eligibility.read().unwrap();
+        Ok(map.get(&address.to_lowercase()).copied())
+    }
     async fn is_sanctioned(&self, address: &str) -> Result<bool, EngineError> {
         if self.fail_sanctions.load(Ordering::Relaxed) {
             return Err(EngineError::ProviderError(
@@ -840,6 +858,45 @@ impl LiveComplianceBackend {
 
 #[async_trait]
 impl ComplianceDataProvider for LiveComplianceBackend {
+    async fn check_identity_eligibility(&self, address: &str) -> Result<Option<bool>, EngineError> {
+        let address_lower = address.to_lowercase();
+        let redis_key = format!("kyc:eligibility:{}", address_lower);
+
+        // 1. Check Redis hot cache
+        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
+            if let Ok(cached) = conn.get::<_, Option<String>>(&redis_key).await {
+                if let Some(val) = cached {
+                    return Ok(Some(val == "1" || val.eq_ignore_ascii_case("true")));
+                }
+            }
+        }
+
+        // 2. Query Postgres identity_verifications
+        let row: Option<(bool, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT is_eligible, expires_at FROM identity_verifications WHERE LOWER(applicant) = $1 LIMIT 1",
+        )
+        .bind(&address_lower)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or(None);
+
+        if let Some((is_eligible, expires_at)) = row {
+            let active = if let Some(exp) = expires_at {
+                is_eligible && exp > chrono::Utc::now()
+            } else {
+                is_eligible
+            };
+
+            // Cache in Redis for fast O(1) screening on subsequent blocks
+            if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
+                let _: Result<(), _> = conn.set_ex(&redis_key, if active { "1" } else { "0" }, 3600).await;
+            }
+            return Ok(Some(active));
+        }
+
+        Ok(None)
+    }
+
     async fn is_sanctioned(&self, address: &str) -> Result<bool, EngineError> {
         let address_lower = address.to_lowercase();
         let env_key = get_sanctions_env_key();
@@ -1209,6 +1266,7 @@ pub async fn health_handler(
 
 pub fn create_app(provider: Arc<dyn ComplianceDataProvider>) -> Router {
     Router::new()
+        .route("/", get(health_handler))
         .route("/screen", post(screen_handler))
         .route("/health", get(health_handler))
         .route("/admin/refresh", post(admin_refresh_handler))
@@ -1404,5 +1462,44 @@ mod tests {
         assert_eq!(decisions.len(), 2);
         assert_eq!(decisions[0].tx_hash, "0xduplicate_hash_test");
         assert_eq!(decisions[1].tx_hash, "0xduplicate_hash_test");
+    }
+
+    #[tokio::test]
+    async fn test_authoritative_identity_eligibility() {
+        let sender = "0x1111111111111111111111111111111111111111";
+        let mock = MockComplianceBackend::new().with_identity_eligibility(sender, true);
+
+        let req = ScreenRequest {
+            tx_hash: "0xkyc_test_01".to_string(),
+            sender: sender.to_string(),
+            recipient: Some("0x2222222222222222222222222222222222222222".to_string()),
+            value: Some(100),
+            policy: None,
+            bundle_id: None,
+            value_usd: None,
+            vasp_metadata: None,
+        };
+
+        let res = evaluate_transaction(&mock, &req).await.unwrap();
+        assert_eq!(res.decision, "ALLOW");
+        assert!(res.reasons.iter().any(|r| r == "ONCHAIN_IDENTITY_VERIFIED"));
+
+        // Now test unverified sender
+        let unverified_sender = "0x3333333333333333333333333333333333333333";
+        let mock_unverified = MockComplianceBackend::new().with_identity_eligibility(unverified_sender, false);
+
+        let req_unverified = ScreenRequest {
+            tx_hash: "0xkyc_test_02".to_string(),
+            sender: unverified_sender.to_string(),
+            recipient: Some("0x2222222222222222222222222222222222222222".to_string()),
+            value: Some(100),
+            policy: None,
+            bundle_id: None,
+            value_usd: None,
+            vasp_metadata: None,
+        };
+
+        let res_unverified = evaluate_transaction(&mock_unverified, &req_unverified).await.unwrap();
+        assert!(res_unverified.reasons.iter().any(|r| r == "UNVERIFIED_SENDER_REVERT_RISK"));
     }
 }

@@ -5,7 +5,7 @@ import "./IComplianceRegistry.sol";
 
 /**
  * @title ComplianceRegistry
- * @notice On-chain identity & compliance verification registry driven by Chainlink Functions.
+ * @notice On-chain decentralized identity & compliance verification registry driven by Chainlink Functions.
  *
  * Flow:
  *  Step 1: Applicant gets verified off-chain (Polygon ID, World ID, or Exchange KYC).
@@ -27,10 +27,17 @@ contract ComplianceRegistry is IComplianceRegistry {
     mapping(bytes32 => address) public requestToApplicant;
     mapping(bytes32 => string) public requestToProvider;
 
+    // Whitelist of authorized decentralized identity providers
+    mapping(string => bool) public supportedProviders;
+
+    event ProviderConfigUpdated(string provider, bool enabled);
+
     error Unauthorized();
     error InvalidAddress();
     error RequestNotFound();
     error UnexpectedRequestSource();
+    error UnsupportedProvider(string provider);
+    error MockDisabledOnLiveNetwork();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -38,18 +45,24 @@ contract ComplianceRegistry is IComplianceRegistry {
     }
 
     modifier onlyRouter() {
-        if (msg.sender != functionsRouter && msg.sender != owner) {
+        // Strict router enforcement: owner cannot spoof oracle fulfillment
+        if (msg.sender != functionsRouter) {
             revert UnexpectedRequestSource();
         }
         _;
     }
 
     constructor(address _functionsRouter, bytes32 _donId, uint64 _subscriptionId) {
+        if (_functionsRouter == address(0)) revert InvalidAddress();
         owner = msg.sender;
         functionsRouter = _functionsRouter;
         donId = _donId;
         subscriptionId = _subscriptionId;
         callbackGasLimit = 300000;
+
+        supportedProviders["POLYGON_ID"] = true;
+        supportedProviders["WORLD_ID"] = true;
+        supportedProviders["EXCHANGE_KYC"] = true;
     }
 
     function setOwner(address newOwner) external onlyOwner {
@@ -58,6 +71,7 @@ contract ComplianceRegistry is IComplianceRegistry {
     }
 
     function setFunctionsRouter(address _router) external onlyOwner {
+        if (_router == address(0)) revert InvalidAddress();
         functionsRouter = _router;
     }
 
@@ -73,8 +87,18 @@ contract ComplianceRegistry is IComplianceRegistry {
         callbackGasLimit = _gasLimit;
     }
 
+    function setSupportedProvider(string calldata provider, bool supported) external onlyOwner {
+        supportedProviders[provider] = supported;
+        emit ProviderConfigUpdated(provider, supported);
+    }
+
+    function isSupportedProvider(string calldata provider) external view override returns (bool) {
+        return supportedProviders[provider];
+    }
+
     /**
      * @notice Step 2: Request verification through Chainlink Functions.
+     * @dev Restricts callers to applicant self-request or contract owner. Enforces provider whitelist.
      * @param applicant Address of the applicant seeking on-chain credentialing.
      * @param provider Identity provider ("POLYGON_ID", "WORLD_ID", or "EXCHANGE_KYC").
      */
@@ -83,9 +107,10 @@ contract ComplianceRegistry is IComplianceRegistry {
         string calldata provider
     ) external override returns (bytes32 requestId) {
         if (applicant == address(0)) revert InvalidAddress();
+        if (msg.sender != applicant && msg.sender != owner) revert Unauthorized();
+        if (!supportedProviders[provider]) revert UnsupportedProvider(provider);
 
-        // In a live testnet environment with @chainlink/contracts, this invokes `_sendRequest(...)`
-        // Generating deterministic requestId for simulation / tracking
+        // Deterministic request tracking compatible with both Anvil and live Chainlink DON
         requestId = keccak256(abi.encodePacked(applicant, provider, block.timestamp, block.prevrandao));
 
         requestToApplicant[requestId] = applicant;
@@ -96,14 +121,14 @@ contract ComplianceRegistry is IComplianceRegistry {
     }
 
     /**
-     * @notice Step 3: Chainlink Functions fulfillment callback.
-     * @dev Decodes response ABI bytes (bool eligible, uint16 countryCode, uint64 expirySecs).
+     * @notice Step 3: Chainlink Functions standard fulfillment callback.
+     * @dev Decodes response ABI bytes (bool eligible, uint16 countryCode).
      */
     function handleOracleFulfillment(
         bytes32 requestId,
         bytes memory response,
         bytes memory /* err */
-    ) external onlyRouter {
+    ) public onlyRouter {
         address applicant = requestToApplicant[requestId];
         if (applicant == address(0)) revert RequestNotFound();
 
@@ -136,7 +161,19 @@ contract ComplianceRegistry is IComplianceRegistry {
     }
 
     /**
-     * @notice Local Dev / Simulation helper to fulfill or test without live DON.
+     * @notice Chainlink FunctionsClient standard fulfillment entrypoint.
+     */
+    function fulfillRequest(
+        bytes32 requestId,
+        bytes memory response,
+        bytes memory err
+    ) external onlyRouter {
+        handleOracleFulfillment(requestId, response, err);
+    }
+
+    /**
+     * @notice Local Dev / Simulation helper to fulfill without live DON.
+     * @dev STRICTLY DISABLED on live networks (permitted ONLY on Anvil chain ID 31337).
      */
     function mockFulfill(
         address applicant,
@@ -144,7 +181,9 @@ contract ComplianceRegistry is IComplianceRegistry {
         uint16 countryCode,
         string calldata provider
     ) external onlyOwner {
+        if (block.chainid != 31337) revert MockDisabledOnLiveNetwork();
         if (applicant == address(0)) revert InvalidAddress();
+        if (!supportedProviders[provider]) revert UnsupportedProvider(provider);
 
         uint64 nowTime = uint64(block.timestamp);
         uint64 expiresAt = eligible ? nowTime + 365 days : 0;
@@ -158,6 +197,28 @@ contract ComplianceRegistry is IComplianceRegistry {
         });
 
         emit EligibilityUpdated(applicant, eligible, provider);
+    }
+
+    /**
+     * @notice Revoke compliance eligibility for an account (regulatory sanctions / AML freeze).
+     */
+    function revoke(address account, string calldata reason) external override onlyOwner {
+        if (account == address(0)) revert InvalidAddress();
+
+        _records[account].isEligible = false;
+        _records[account].expiresAt = uint64(block.timestamp);
+
+        emit EligibilityRevoked(account, reason);
+        emit EligibilityUpdated(account, false, reason);
+    }
+
+    /**
+     * @notice GDPR / request timeout pruning helper for pending requests.
+     */
+    function prunePendingRequest(bytes32 requestId) external onlyOwner {
+        if (requestToApplicant[requestId] == address(0)) revert RequestNotFound();
+        delete requestToApplicant[requestId];
+        delete requestToProvider[requestId];
     }
 
     /**

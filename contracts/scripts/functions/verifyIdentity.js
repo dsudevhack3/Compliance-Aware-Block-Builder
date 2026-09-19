@@ -18,57 +18,117 @@ const applicantWallet = args[0];
 const provider = (args[1] || "EXCHANGE_KYC").toUpperCase();
 const credentialProof = args[2] || "";
 
-if (!applicantWallet || !applicantWallet.startsWith("0x")) {
-  throw new Error("Invalid applicant wallet address");
+if (!applicantWallet || !applicantWallet.startsWith("0x") || applicantWallet.length !== 42) {
+  throw new Error("Invalid applicant wallet address (expected 42-char 0x address)");
 }
+
+// Ensure secrets object exists in sandbox
+const sec = typeof secrets !== "undefined" ? secrets : {};
 
 let isEligible = false;
 let nationalityCode = 0; // ISO-3166 numeric (e.g. 840 = USA, 826 = GBR, 356 = IND)
 
 if (provider === "POLYGON_ID") {
-  // Polygon ID: Verifies ZK proof of credential (e.g. age/nationality verifiable credential)
-  // Calls off-chain issuer state resolver or verifier service
-  const verifierUrl = secrets.POLYGON_ID_RESOLVER_URL || "https://api-staging.polygonid.com/v1/identities";
+  // Polygon ID: Verifies ZK proof of credential against issuer state resolver
+  const verifierUrl = sec.POLYGON_ID_RESOLVER_URL || "https://api-staging.polygonid.com/v1/identities";
   
-  // Simulated or live query to the Polygon ID State Resolver
-  // In live production, check credential proof with the resolver
-  if (credentialProof.length > 0 || applicantWallet.toLowerCase().endsWith("1")) {
-    isEligible = true;
-    nationalityCode = 840; // Verified US / compliant jurisdiction
+  if (typeof Functions !== "undefined" && Functions.makeHttpRequest && sec.POLYGON_ID_RESOLVER_URL) {
+    try {
+      const response = await Functions.makeHttpRequest({
+        url: `${verifierUrl}/${applicantWallet}/claims/verify`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        data: { proof: credentialProof, wallet: applicantWallet },
+        timeout: 9000,
+      });
+      if (!response.error && response.data && response.data.verified) {
+        isEligible = true;
+        nationalityCode = response.data.countryCode || 840;
+      }
+    } catch {
+      isEligible = false;
+    }
   } else {
-    isEligible = true;
-    nationalityCode = 826; // Verified UK
+    // Verified ZK credential proof heuristic for simulation
+    if (credentialProof.length >= 64 || applicantWallet.toLowerCase().endsWith("1")) {
+      isEligible = true;
+      nationalityCode = 840; // Verified US / compliant jurisdiction
+    } else {
+      isEligible = true;
+      nationalityCode = 826; // Verified UK
+    }
   }
 } else if (provider === "WORLD_ID") {
-  // World ID: Verifies unique human personhood (NOT nationality, but sybil-resistant uniqueness)
-  // Calls Worldcoin Developer Portal API
-  const worldIdAppId = secrets.WORLD_ID_APP_ID || "app_staging_compliance_builder";
+  // World ID: Verifies unique human personhood (Sybil-resistant uniqueness)
+  const worldIdAppId = sec.WORLD_ID_APP_ID || "app_staging_compliance_builder";
   const action = "onchain-compliance-registration";
   
-  // World ID proofs establish 1-person-1-wallet personhood
-  isEligible = true;
-  nationalityCode = 0; // World ID proves uniqueness/personhood, not specific country
+  if (typeof Functions !== "undefined" && Functions.makeHttpRequest && sec.WORLD_ID_APP_ID && credentialProof) {
+    try {
+      const response = await Functions.makeHttpRequest({
+        url: `https://developer.worldcoin.org/api/v1/verify/${worldIdAppId}`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        data: {
+          nullifier_hash: credentialProof,
+          merkle_root: "0x00",
+          proof: credentialProof,
+          action: action,
+          signal: applicantWallet,
+        },
+        timeout: 9000,
+      });
+      if (!response.error && response.data && response.data.success) {
+        isEligible = true;
+        nationalityCode = 0;
+      }
+    } catch {
+      isEligible = false;
+    }
+  } else {
+    isEligible = true;
+    nationalityCode = 0; // World ID proves personhood uniqueness
+  }
 } else if (provider === "EXCHANGE_KYC") {
-  // Regulated Exchange KYC (e.g., Binance / Coinbase verification partner)
-  // Uses authenticated API key in encrypted secrets
-  const exchangeApiKey = secrets.EXCHANGE_API_KEY || "demo_key";
+  // Regulated Exchange KYC (e.g., Coinbase / Binance partner API)
+  const exchangeApiKey = sec.EXCHANGE_API_KEY;
+  const exchangeEndpoint = sec.EXCHANGE_API_URL;
   
-  // Query exchange compliance verification endpoint
-  // Simulated: Wallets ending with even hex digits are verified tier 2 (full KYC)
-  const lastChar = applicantWallet.slice(-1).toLowerCase();
-  const isEvenHex = ["0", "2", "4", "6", "8", "a", "c", "e"].includes(lastChar);
-  
-  isEligible = isEvenHex;
-  nationalityCode = isEligible ? 840 : 0;
+  if (typeof Functions !== "undefined" && Functions.makeHttpRequest && exchangeEndpoint && exchangeApiKey) {
+    try {
+      const response = await Functions.makeHttpRequest({
+        url: `${exchangeEndpoint}/api/v1/kyc/status?address=${applicantWallet}`,
+        method: "GET",
+        headers: { "Authorization": `Bearer ${exchangeApiKey}` },
+        timeout: 9000,
+      });
+      if (!response.error && response.data && response.data.tier >= 2) {
+        isEligible = true;
+        nationalityCode = response.data.countryCode || 840;
+      }
+    } catch {
+      isEligible = false;
+    }
+  } else {
+    // Deterministic simulation fallback
+    const lastChar = applicantWallet.slice(-1).toLowerCase();
+    const isEvenHex = ["0", "2", "4", "6", "8", "a", "c", "e"].includes(lastChar);
+    isEligible = isEvenHex;
+    nationalityCode = isEligible ? 840 : 0;
+  }
 } else {
   throw new Error(`Unsupported provider: ${provider}`);
 }
 
-// Encode the result into 32-byte words for Solidity abi.decode(response, (bool, uint16))
-// Word 1: uint256(isEligible ? 1 : 0)
-// Word 2: uint256(nationalityCode)
-const eligibleWord = isEligible ? "0000000000000000000000000000000000000000000000000000000000000001" : "0000000000000000000000000000000000000000000000000000000000000000";
-const codeHex = nationalityCode.toString(16).padStart(64, "0");
-const responseHex = Buffer.from(eligibleWord + codeHex, "hex");
-
-return responseHex;
+// Encode result as ABI bytes: (bool isEligible, uint16 nationalityCode)
+if (typeof Functions !== "undefined" && Functions.encodeUint256) {
+  const word1 = Functions.encodeUint256(isEligible ? 1 : 0);
+  const word2 = Functions.encodeUint256(nationalityCode);
+  return Buffer.concat([word1, word2]);
+} else {
+  const eligibleWord = isEligible
+    ? "0000000000000000000000000000000000000000000000000000000000000001"
+    : "0000000000000000000000000000000000000000000000000000000000000000";
+  const codeHex = nationalityCode.toString(16).padStart(64, "0");
+  return Buffer.from(eligibleWord + codeHex, "hex");
+}

@@ -206,6 +206,16 @@ Formatting Rules:
     )
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "Compliance AI Explainer",
+        "status": "ok",
+        "docs_url": "/docs",
+        "dashboard_url": "http://localhost:3000",
+    }
+
+
 @app.get("/health")
 def health():
     return {
