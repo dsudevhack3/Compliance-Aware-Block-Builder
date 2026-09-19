@@ -153,7 +153,8 @@ async fn submit_transaction(
     let mut tx = TransactionRequest::default()
         .with_from(from)
         .with_to(to)
-        .with_value(U256::from(value_wei));
+        .with_value(U256::from(value_wei))
+        .with_gas_price(20_000_000_000u128);
 
     if !calldata.is_empty() {
         tx = tx.with_input(calldata);
@@ -207,7 +208,7 @@ const FORK_COUNTER_CONTRACT_ADDRESS: &str = "0x50cf1849e32E6A17bBFF6B1Aa8b1F7B47
 async fn main() -> eyre::Result<()> {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:password@localhost:5432/compliance_builder".to_string()
+        "postgres://localhost:5432/compliance_builder".to_string()
     });
     if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
         let _ = sqlx::query("DELETE FROM compliance_decisions WHERE tx_hash LIKE '0xsim%' OR tx_hash LIKE '0xstress%' OR tx_hash LIKE '0xtest%'")
@@ -222,8 +223,14 @@ async fn main() -> eyre::Result<()> {
 
     let anvil_rpc =
         std::env::var("ANVIL_RPC").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
-    let engine_url =
-        std::env::var("ENGINE_URL").unwrap_or_else(|_| "http://127.0.0.1:3001/screen".to_string());
+    let engine_url = {
+        let raw = std::env::var("ENGINE_URL").unwrap_or_else(|_| "http://127.0.0.1:3001/screen".to_string());
+        if raw.ends_with("/screen") {
+            raw
+        } else {
+            format!("{}/screen", raw.trim_end_matches('/'))
+        }
+    };
 
     let http_client = reqwest::Client::new();
 
@@ -458,7 +465,7 @@ async fn main() -> eyre::Result<()> {
         &http_client,
         &engine_url,
         fake_tx_hash_7a,
-        &format!("{:?}", clean_sender_address),
+        &format!("{:?}", sender_address),
         &format!("{:?}", real_sanctioned_pool),
     )
     .await?;
