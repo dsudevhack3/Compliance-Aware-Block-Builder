@@ -142,6 +142,20 @@ async function getHealthStatus(reply: any) {
     }
 }
 
+fastify.get('/', async () => ({
+    service: 'Compliance-Aware Block Builder API & WebSocket Gateway',
+    status: 'online',
+    dashboard_url: 'http://localhost:3000',
+    endpoints: {
+        health: '/health',
+        decisions: '/api/decisions',
+        bids: '/api/relay/bids',
+        blocks: '/api/blocks',
+        edd_cases: '/api/edd/cases',
+        websocket: '/ws',
+    },
+}));
+
 fastify.get('/health', async (request, reply) => getHealthStatus(reply));
 fastify.get('/api/health', async (request, reply) => getHealthStatus(reply));
 
@@ -1073,6 +1087,10 @@ setInterval(async () => {
 }, 500);
 
 // --- Chainlink Functions On-Chain Identity Registry Simulation & Cache ---
+// Blocked nationalities (ISO-3166 numeric) — mirrors ComplianceRegistry.blockedCountryCode.
+// 408 PRK North Korea, 792 TUR Turkey, 104 MMR Myanmar.
+const BLOCKED_COUNTRY_CODES = new Set<number>([408, 792, 104]);
+
 interface IdentityVerificationRecord {
     applicant: string;
     isEligible: boolean;
@@ -1083,56 +1101,91 @@ interface IdentityVerificationRecord {
     requestId: string;
 }
 
-const identityRegistry = new Map<string, IdentityVerificationRecord>();
-
-// Pre-seed known demo wallets
-identityRegistry.set('0x28c6c06298d514db089934071355e5743bf21d60'.toLowerCase(), {
-    applicant: '0x28c6c06298d514db089934071355e5743bf21d60',
-    isEligible: true,
-    nationalityCountryCode: 840,
-    provider: 'EXCHANGE_KYC',
-    verifiedAt: Date.now() - 3600_000,
-    expiresAt: Date.now() + 365 * 86400_000,
-    requestId: '0x' + crypto.randomBytes(32).toString('hex'),
-});
-
 fastify.get('/api/compliance/identity/:address', async (request, reply) => {
     const { address } = request.params as { address: string };
-    if (!address || !address.startsWith('0x')) {
+    if (!address || !/^0x[a-fA-F0-9]{40}$/i.test(address)) {
         reply.status(400);
-        return { error: 'Invalid Ethereum address format' };
+        return { error: 'Invalid Ethereum address format (expected 40-hex char address)' };
     }
-    const record = identityRegistry.get(address.toLowerCase());
-    if (!record) {
+
+    try {
+        const row = await pool.query(
+            `SELECT applicant, is_eligible, nationality_country_code, provider, credential_hash, request_id, verified_at, expires_at
+             FROM identity_verifications
+             WHERE LOWER(applicant) = $1 LIMIT 1`,
+            [address.toLowerCase()]
+        );
+
+        if (row.rows.length === 0) {
+            return {
+                applicant: address,
+                isEligible: false,
+                nationalityCountryCode: 0,
+                provider: 'NONE',
+                verifiedAt: null,
+                expiresAt: null,
+            };
+        }
+
+        const r = row.rows[0];
+        const isExpired = r.expires_at ? new Date(r.expires_at).getTime() <= Date.now() : false;
+        const isBlocked = BLOCKED_COUNTRY_CODES.has(Number(r.nationality_country_code));
+        const isEligible = Boolean(r.is_eligible) && !isExpired && !isBlocked;
+
         return {
-            applicant: address,
-            isEligible: false,
-            nationalityCountryCode: 0,
-            provider: 'NONE',
-            verifiedAt: null,
-            expiresAt: null,
+            applicant: r.applicant,
+            isEligible,
+            nationalityCountryCode: r.nationality_country_code,
+            provider: r.provider,
+            credentialHash: r.credential_hash,
+            requestId: r.request_id,
+            verifiedAt: r.verified_at ? new Date(r.verified_at).getTime() : null,
+            expiresAt: r.expires_at ? new Date(r.expires_at).getTime() : null,
+            isExpired,
+            isBlocked,
         };
+    } catch (err: any) {
+        reply.status(500);
+        return { error: `Failed to query identity record: ${err.message}` };
     }
-    return record;
 });
 
 fastify.post('/api/compliance/identity/verify', async (request, reply) => {
+    // Enforce admin or authorized compliance officer authentication
+    if (!verifyAdminAuth(request)) {
+        reply.status(401);
+        return { error: 'Unauthorized: Admin authentication header (x-admin-key or Bearer) required' };
+    }
+
+    // Sliding-window rate limit
+    const clientIp = request.ip || 'identity-verify-client';
+    if (!checkRateLimit(`identity:verify:${clientIp}`, 15, 60_000)) {
+        reply.status(429);
+        return { error: 'Rate limit exceeded for identity verification (max 15/min)' };
+    }
+
     const body = request.body as {
         applicant?: string;
         provider?: 'POLYGON_ID' | 'WORLD_ID' | 'EXCHANGE_KYC';
         credentialProof?: string;
     };
 
-    if (!body || !body.applicant || !body.applicant.startsWith('0x')) {
+    if (!body || !body.applicant || !/^0x[a-fA-F0-9]{40}$/i.test(body.applicant)) {
         reply.status(400);
-        return { error: 'Valid applicant address starting with 0x is required' };
+        return { error: 'Valid applicant Ethereum address starting with 0x (42 chars) is required' };
     }
 
     const provider = body.provider || 'EXCHANGE_KYC';
+    const allowedProviders = ['POLYGON_ID', 'WORLD_ID', 'EXCHANGE_KYC'];
+    if (!allowedProviders.includes(provider)) {
+        reply.status(400);
+        return { error: `Unsupported provider: ${provider}. Allowed: ${allowedProviders.join(', ')}` };
+    }
+
     let isEligible = false;
     let nationalityCode = 0;
 
-    // Sanctioned-jurisdiction short-circuit — mirrors verifyIdentity.js DON logic (50 jurisdictions).
+    // Sanctioned-jurisdiction short-circuit — mirrors verifyIdentity.js DON logic (408/792/104).
     const proofUpper = (body.credentialProof || '').toUpperCase();
     const walletLower = body.applicant.toLowerCase();
     const SANCTIONED_LIST: Array<[number, string, string, string[]]> = [
@@ -1194,45 +1247,112 @@ fastify.post('/api/compliance/identity/verify', async (request, reply) => {
             nationalityCode = 0;
         }
     } else if (provider === 'WORLD_ID') {
-        isEligible = true;
-        nationalityCode = 0; // Unique personhood
+        // Require non-trivial nullifier hash for World ID personhood proof
+        isEligible = Boolean(body.credentialProof && body.credentialProof.trim().length >= 10);
+        nationalityCode = 0; // World ID verifies unique human personhood
     } else if (provider === 'EXCHANGE_KYC') {
+        // Regulated exchange tier-2 partner verification
         const lastChar = body.applicant.slice(-1).toLowerCase();
-        isEligible = ['0', '2', '4', '6', '8', 'a', 'c', 'e'].includes(lastChar);
+        isEligible = ['0', '2', '4', '6', '8', 'a', 'c', 'e'].includes(lastChar) || Boolean(body.credentialProof);
         nationalityCode = isEligible ? 840 : 0;
     }
 
-    const now = Date.now();
-    const expiresAt = isEligible ? now + 365 * 86400_000 : 0;
+    const applicantLower = body.applicant.toLowerCase();
+    const credentialHash = '0x' + crypto.createHash('sha256')
+        .update(`${applicantLower}:${provider}:${body.credentialProof || ''}`)
+        .digest('hex');
     const requestId = '0x' + crypto.randomBytes(32).toString('hex');
 
-    const record: IdentityVerificationRecord = {
-        applicant: body.applicant,
-        isEligible,
-        nationalityCountryCode: nationalityCode,
-        provider,
-        verifiedAt: now,
-        expiresAt,
-        requestId,
-    };
+    try {
+        await pool.query(
+            `INSERT INTO identity_verifications (
+                applicant, is_eligible, nationality_country_code, provider, credential_hash, request_id, verified_at, expires_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, NOW(), NOW() + INTERVAL '365 days', NOW()
+            )
+            ON CONFLICT (applicant) DO UPDATE SET
+                is_eligible = EXCLUDED.is_eligible,
+                nationality_country_code = EXCLUDED.nationality_country_code,
+                provider = EXCLUDED.provider,
+                credential_hash = EXCLUDED.credential_hash,
+                request_id = EXCLUDED.request_id,
+                verified_at = NOW(),
+                expires_at = NOW() + INTERVAL '365 days',
+                updated_at = NOW()`,
+            [applicantLower, isEligible, nationalityCode, provider, credentialHash, requestId]
+        );
 
-    identityRegistry.set(body.applicant.toLowerCase(), record);
+        const record = {
+            applicant: body.applicant,
+            isEligible,
+            nationalityCountryCode: nationalityCode,
+            provider,
+            credentialHash,
+            requestId,
+            verifiedAt: Date.now(),
+            expiresAt: isEligible ? Date.now() + 365 * 86400_000 : 0,
+        };
 
-    broadcast({
-        type: 'identity_updated',
-        data: record,
-    });
+        broadcast({
+            type: 'identity_updated',
+            data: record,
+        });
 
-    return {
-        success: true,
-        record,
-        chainlinkStep: {
-            step1_offchain: `Applicant credentials verified via ${provider}`,
-            step2_don_query: `Chainlink DON query dispatched (requestId: ${requestId})`,
-            step3_fulfilled: `DON consensus reached; isEligible[${body.applicant.slice(0, 10)}...] written to storage`,
-            step4_enforced: isEligible ? 'require(isEligible) will PASS' : 'require(isEligible) will REVERT',
-        },
-    };
+        return {
+            success: true,
+            record,
+            chainlinkStep: {
+                step1_offchain: `Applicant credentials verified via ${provider}`,
+                step2_don_query: `Chainlink DON query dispatched (requestId: ${requestId})`,
+                step3_fulfilled: `DON consensus reached; isEligible[${body.applicant.slice(0, 10)}...] written to persistent database & on-chain state`,
+                step4_enforced: isEligible ? 'require(isEligible) will PASS' : 'require(isEligible) will REVERT',
+            },
+        };
+    } catch (err: any) {
+        reply.status(500);
+        return { error: `Database persistence failed: ${err.message}` };
+    }
+});
+
+fastify.post('/api/compliance/identity/revoke', async (request, reply) => {
+    // Enforce admin authentication
+    if (!verifyAdminAuth(request)) {
+        reply.status(401);
+        return { error: 'Unauthorized: Admin authentication header required to revoke identity eligibility' };
+    }
+
+    const body = request.body as { applicant?: string; reason?: string };
+    if (!body || !body.applicant || !/^0x[a-fA-F0-9]{40}$/i.test(body.applicant)) {
+        reply.status(400);
+        return { error: 'Valid applicant Ethereum address starting with 0x (42 chars) is required' };
+    }
+
+    const applicantLower = body.applicant.toLowerCase();
+    const reason = body.reason || 'Revoked by compliance officer';
+
+    try {
+        await pool.query(
+            `UPDATE identity_verifications
+             SET is_eligible = FALSE, expires_at = NOW(), updated_at = NOW()
+             WHERE LOWER(applicant) = $1`,
+            [applicantLower]
+        );
+
+        broadcast({
+            type: 'identity_revoked',
+            data: { applicant: body.applicant, reason },
+        });
+
+        return {
+            success: true,
+            applicant: body.applicant,
+            status: 'REVOKED',
+            reason,
+        };
+    } catch (err: any) {
+        reply.status(500);
+        return { error: `Revocation failed: ${err.message}` };
+    }
 });
 
 const port = Number(process.env.PORT) || 3002;

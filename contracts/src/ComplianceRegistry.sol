@@ -6,23 +6,23 @@ import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/v1_0_0/l
 import "./IComplianceRegistry.sol";
 
 /**
- * @title ComplianceRegistry (Production — Sepolia)
- * @notice On-chain identity registry driven by real Chainlink Functions.
+ * @title ComplianceRegistry
+ * @notice On-chain decentralized identity & compliance verification registry driven by Chainlink Functions.
  *
  * Flow:
- *  Step 1: Applicant gets verified off-chain (Polygon ID / World ID / Exchange KYC).
+ *  Step 1: Applicant gets verified off-chain (Polygon ID, World ID, or Exchange KYC).
  *  Step 2: requestVerification() sends args [wallet, provider, proof] to the DON
  *          via FunctionsClient._sendRequest with DON-hosted secrets.
  *  Step 3: fulfillRequest() (router-only) decodes (bool eligible, uint16 country),
  *          enforces the 408/792/104 blocklist fail-closed, writes IdentityRecord.
- *  Step 4: Gated contracts call isEligible() with expiry + blocklist checks.
+ *  Step 4: Smart contracts enforce `require(registry.isEligible(msg.sender), "Not eligible")`.
  *
  * Sepolia defaults:
- *  Router: 0xb83E47C2bC239B31AB286EA3DD212D87f0c7D77d
- *  DON ID: 0x66756e2d657468657265756d2d7365706f6c69612d310000000000000000000000 (fun-ethereum-sepolia-1)
+ *  Router: 0xb83e47c2bC239B31ab286eA3DD212D87F0C7D77D
+ *  DON ID: fun-ethereum-sepolia-1
  *
  * Demo fallback: scripts/functions/verifyIdentity.demo.js + mockFulfill() for Anvil
- *  without LINK. Never call mockFulfill() on a production deployment.
+ *  without LINK. mockFulfill() is STRICTLY DISABLED on live networks (Anvil 31337 only).
  */
 contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
     using FunctionsRequest for FunctionsRequest.Request;
@@ -39,21 +39,29 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
     uint64 public secretsVersion;
     bool public useDonSecrets;
 
+    // Mapping: applicant address => identity record
     mapping(address => IdentityRecord) private _records;
+
+    // Mapping: Chainlink requestId => applicant address
     mapping(bytes32 => address) public requestToApplicant;
     mapping(bytes32 => string) public requestToProvider;
-    /// @notice Prevent World ID double-signaling: nullifierHash => used
-    mapping(bytes32 => bool) public worldIdNullifierUsed;
 
     // 408 PRK North Korea, 792 TUR Turkey, 104 MMR Myanmar
     mapping(uint16 => bool) public blockedCountryCode;
+
+    // Whitelist of authorized decentralized identity providers
+    mapping(string => bool) public supportedProviders;
+
+    event ProviderConfigUpdated(string provider, bool enabled);
+    event SourceUpdated();
+    event SecretsUpdated(uint8 slotId, uint64 version, bool enabled);
 
     error Unauthorized();
     error InvalidAddress();
     error RequestNotFound();
     error EmptySource();
-    event SourceUpdated();
-    event SecretsUpdated(uint8 slotId, uint64 version, bool enabled);
+    error UnsupportedProvider(string provider);
+    error MockDisabledOnLiveNetwork();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -66,14 +74,20 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         uint64 _subscriptionId,
         string memory _jsSource
     ) FunctionsClient(_router) {
+        if (_router == address(0)) revert InvalidAddress();
         owner = msg.sender;
         donId = _donId;
         subscriptionId = _subscriptionId;
         callbackGasLimit = 300_000;
         jsSource = _jsSource;
+        // Blocked nationalities: North Korea, Turkey, Myanmar.
         blockedCountryCode[408] = true;
         blockedCountryCode[792] = true;
         blockedCountryCode[104] = true;
+
+        supportedProviders["POLYGON_ID"] = true;
+        supportedProviders["WORLD_ID"] = true;
+        supportedProviders["EXCHANGE_KYC"] = true;
     }
 
     // --- Owner config ---
@@ -105,8 +119,18 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         return address(i_router);
     }
 
+    function setSupportedProvider(string calldata provider, bool supported) external onlyOwner {
+        supportedProviders[provider] = supported;
+        emit ProviderConfigUpdated(provider, supported);
+    }
+
+    function isSupportedProvider(string calldata provider) external view override returns (bool) {
+        return supportedProviders[provider];
+    }
+
     /**
      * @notice Step 2 (production): send verification request to the DON.
+     * @dev Restricts callers to applicant self-request or contract owner. Enforces provider whitelist.
      * @param applicant Wallet seeking credentialing.
      * @param provider "POLYGON_ID" | "WORLD_ID" | "EXCHANGE_KYC".
      * @param proof Provider proof (ZK proof JSON / World ID proof JSON / KYC reference).
@@ -117,6 +141,8 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         string memory proof
     ) public returns (bytes32 requestId) {
         if (applicant == address(0)) revert InvalidAddress();
+        if (msg.sender != applicant && msg.sender != owner) revert Unauthorized();
+        if (!supportedProviders[provider]) revert UnsupportedProvider(provider);
         if (bytes(jsSource).length == 0) revert EmptySource();
 
         FunctionsRequest.Request memory req;
@@ -137,7 +163,7 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         return requestId;
     }
 
-    /// @notice IComplianceRegistry compat (no proof — WORLD_ID/EXCHANGE_KYC callers should use 3-arg version).
+    /// @notice IComplianceRegistry compat (no proof — callers with proofs should use 3-arg version).
     function requestVerification(
         address applicant,
         string calldata provider
@@ -146,9 +172,9 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
     }
 
     /**
-     * @notice Step 3: router-only fulfillment. Decodes (bool eligible, uint16 country).
-     * @dev World ID reuse is blocked here via nullifier hash embedded by the DON
-     *  (extend response to (bool, uint16, bytes32 nullifier) if strict reuse protection needed).
+     * @notice Step 3: router-only fulfillment (via FunctionsClient.handleOracleFulfillment).
+     * @dev Decodes response ABI bytes (bool eligible, uint16 countryCode).
+     *  Fail-closed: sanctioned nationality can never be eligible.
      */
     function fulfillRequest(
         bytes32 requestId,
@@ -182,7 +208,8 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
     }
 
     /**
-     * @notice Local-only helper for Anvil/demo without LINK. Do NOT call on production.
+     * @notice Local Dev / Simulation helper to fulfill without live DON.
+     * @dev STRICTLY DISABLED on live networks (permitted ONLY on Anvil chain ID 31337).
      */
     function mockFulfill(
         address applicant,
@@ -190,20 +217,49 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         uint16 countryCode,
         string calldata provider
     ) external onlyOwner {
+        if (block.chainid != 31337) revert MockDisabledOnLiveNetwork();
         if (applicant == address(0)) revert InvalidAddress();
+        if (!supportedProviders[provider]) revert UnsupportedProvider(provider);
         if (blockedCountryCode[countryCode]) eligible = false;
-        uint64 now_ = uint64(block.timestamp);
+
+        uint64 nowTime = uint64(block.timestamp);
+        uint64 expiresAt = eligible ? nowTime + 365 days : 0;
+
         _records[applicant] = IdentityRecord({
             isEligible: eligible,
             nationalityCountryCode: countryCode,
-            verifiedAt: now_,
-            expiresAt: eligible ? now_ + 365 days : 0,
+            verifiedAt: nowTime,
+            expiresAt: expiresAt,
             provider: provider
         });
         emit EligibilityUpdated(applicant, eligible, provider);
     }
 
-    /// @notice Step 4 check with expiry + blocklist.
+    /**
+     * @notice Revoke compliance eligibility for an account (regulatory sanctions / AML freeze).
+     */
+    function revoke(address account, string calldata reason) external override onlyOwner {
+        if (account == address(0)) revert InvalidAddress();
+
+        _records[account].isEligible = false;
+        _records[account].expiresAt = uint64(block.timestamp);
+
+        emit EligibilityRevoked(account, reason);
+        emit EligibilityUpdated(account, false, reason);
+    }
+
+    /**
+     * @notice GDPR / request timeout pruning helper for pending requests.
+     */
+    function prunePendingRequest(bytes32 requestId) external onlyOwner {
+        if (requestToApplicant[requestId] == address(0)) revert RequestNotFound();
+        delete requestToApplicant[requestId];
+        delete requestToProvider[requestId];
+    }
+
+    /**
+     * @notice Step 4 check: Returns true if the account has valid, unexpired eligibility.
+     */
     function isEligible(address account) external view override returns (bool) {
         IdentityRecord memory r = _records[account];
         if (!r.isEligible) return false;
@@ -212,6 +268,9 @@ contract ComplianceRegistry is FunctionsClient, IComplianceRegistry {
         return true;
     }
 
+    /**
+     * @notice Get full identity details for an account.
+     */
     function getIdentityRecord(address account) external view override returns (IdentityRecord memory) {
         return _records[account];
     }

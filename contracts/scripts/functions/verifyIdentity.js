@@ -29,6 +29,9 @@ if (!applicantWallet || !applicantWallet.startsWith("0x") || applicantWallet.len
   throw new Error("Invalid applicant wallet address");
 }
 
+// Guard for sandboxes without injected secrets (fail-closed downstream via required-secret checks)
+const sec = typeof secrets !== "undefined" ? secrets : {};
+
 // 3 blocked nationalities enforced fail-closed on both DON + contract.
 const BLOCKED = { 408: 1, 792: 1, 104: 1 };
 function pad3(n) {
@@ -44,11 +47,11 @@ if (provider === "POLYGON_ID") {
   // check credentialSubject nationality, check revocation/expiry.
   // Expected response: { verified: bool, issuerSigValid: bool, nationalityCode: 840, revoked: bool }
   if (!credentialProof) throw new Error("missing Polygon ID proof");
-  const verifierUrl = secrets.POLYGON_ID_VERIFIER_URL;
+  const verifierUrl = sec.POLYGON_ID_VERIFIER_URL;
   if (!verifierUrl) throw new Error("missing secret POLYGON_ID_VERIFIER_URL");
 
   const headers = { "Content-Type": "application/json" };
-  if (secrets.POLYGON_ID_API_KEY) headers["Authorization"] = "Bearer " + secrets.POLYGON_ID_API_KEY;
+  if (sec.POLYGON_ID_API_KEY) headers["Authorization"] = "Bearer " + sec.POLYGON_ID_API_KEY;
 
   const req = await Functions.makeHttpRequest({
     url: verifierUrl,
@@ -66,7 +69,7 @@ if (provider === "POLYGON_ID") {
 } else if (provider === "WORLD_ID") {
   // Real World ID verification via Worldcoin Developer Portal.
   // credentialProof must be JSON: { nullifier_hash, merkle_root, proof, verification_level }
-  const appId = secrets.WORLD_ID_APP_ID;
+  const appId = sec.WORLD_ID_APP_ID;
   if (!appId) throw new Error("missing secret WORLD_ID_APP_ID");
   let p;
   try {
@@ -96,8 +99,8 @@ if (provider === "POLYGON_ID") {
   nationalityCode = 0; // personhood only, no nationality
 } else if (provider === "EXCHANGE_KYC") {
   // Real regulated-KYC partner lookup. Key lives in DON secrets, never on-chain.
-  const baseUrl = secrets.KYC_PARTNER_URL;
-  const apiKey = secrets.EXCHANGE_API_KEY;
+  const baseUrl = sec.KYC_PARTNER_URL;
+  const apiKey = sec.EXCHANGE_API_KEY;
   if (!baseUrl || !apiKey) throw new Error("missing secrets KYC_PARTNER_URL / EXCHANGE_API_KEY");
 
   const req = await Functions.makeHttpRequest({
