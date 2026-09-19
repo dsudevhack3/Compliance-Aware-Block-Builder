@@ -54,6 +54,91 @@ type SubmissionResultItem = {
   error?: string;
 };
 
+export type BuilderBidInput = {
+  id: string;
+  builder_id: string;
+  bid_value_eth: string;
+  fee_recipient: string;
+  txs: CustomTxRow[];
+};
+
+export type AuctionHeaderResponse = {
+  slot: number;
+  block_hash: string;
+  builder_id: string;
+  builder_pubkey: string;
+  fee_recipient: string;
+  value_wei: string;
+};
+
+export type StoredBidResult = {
+  id?: string;
+  slot: number;
+  builder_id: string;
+  block_hash?: string;
+  fee_recipient: string;
+  value_wei: string;
+  verdict: string;
+  reasons: string[];
+  ai_summary?: string;
+  error?: string;
+};
+
+export type AuctionRunResult = {
+  slot: number;
+  winningHeader: AuctionHeaderResponse | null;
+  isFailClosed: boolean;
+  failClosedReason?: string;
+  bids: StoredBidResult[];
+  submittedAt: string;
+};
+
+// Seeded 3-bid scenario for Relay Auction demo
+const EXAMPLE_RELAY_BIDS: BuilderBidInput[] = [
+  {
+    id: 'bid_a_clean',
+    builder_id: 'Builder A (Compliant)',
+    bid_value_eth: '2.0',
+    fee_recipient: '0x0330070fd38ec3bb94f58fa55d40368271e9e54a', // clean address from seed_addresses.sql
+    txs: [
+      {
+        id: 'tx_a_1',
+        sender: '0x1111111111111111111111111111111111111111',
+        recipient: '0x2222222222222222222222222222222222222222',
+        value: '1000000000000000000',
+      },
+    ],
+  },
+  {
+    id: 'bid_b_sanctioned_tx',
+    builder_id: 'Builder B (Sanctioned Tx, 2.5 ETH)',
+    bid_value_eth: '2.5',
+    fee_recipient: '0x038989cbb1710c72b9920dc4fa529158f463e72c', // clean address from seed_addresses.sql
+    txs: [
+      {
+        id: 'tx_b_1',
+        sender: '0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b', // OFAC Sanctioned from seed_addresses.sql
+        recipient: '0x2222222222222222222222222222222222222222',
+        value: '500000000000000000',
+      },
+    ],
+  },
+  {
+    id: 'bid_c_sanctioned_fee',
+    builder_id: 'Builder C (Sanctioned Fee, 1.8 ETH)',
+    bid_value_eth: '1.8',
+    fee_recipient: '0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b', // OFAC Sanctioned fee recipient
+    txs: [
+      {
+        id: 'tx_c_1',
+        sender: '0x1111111111111111111111111111111111111111',
+        recipient: '0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc', // Tornado Cash mixer from seed_entities.sql
+        value: '100000000000000000',
+      },
+    ],
+  },
+];
+
 type Decision = {
   tx_hash: string;
   sender: string;
@@ -244,6 +329,7 @@ export default function ArcadePage() {
 
   // Custom Transaction Submission Panel States
   const [isCustomPanelOpen, setIsCustomPanelOpen] = useState(false);
+  const [panelMode, setPanelMode] = useState<'individual' | 'relay_auction'>('individual');
   const [customInputMode, setCustomInputMode] = useState<'form' | 'json'>('form');
   const [formRows, setFormRows] = useState<CustomTxRow[]>([
     { id: 'row_1', sender: '', recipient: '', value: DEFAULT_ETH_VALUE_WEI },
@@ -255,6 +341,14 @@ export default function ArcadePage() {
   const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number } | null>(null);
   const [submissionSummary, setSubmissionSummary] = useState<string | null>(null);
   const [submissionResults, setSubmissionResults] = useState<SubmissionResultItem[]>([]);
+
+  // Relay Auction Mode States
+  const [auctionSlot, setAuctionSlot] = useState<number>(100);
+  const [builderBids, setBuilderBids] = useState<BuilderBidInput[]>(EXAMPLE_RELAY_BIDS);
+  const [isSubmittingAuction, setIsSubmittingAuction] = useState(false);
+  const [auctionProgress, setAuctionProgress] = useState<{ current: number; total: number; currentBuilder?: string } | null>(null);
+  const [auctionValidationErrors, setAuctionValidationErrors] = useState<string[] | null>(null);
+  const [auctionResult, setAuctionResult] = useState<AuctionRunResult | null>(null);
 
   // Tennis Racket & Hit feedback states
   const [racketSwingClass, setRacketSwingClass] = useState<string | null>(null);
@@ -915,6 +1009,366 @@ export default function ArcadePage() {
     const trimmed = addr.trim();
     return /^0x[a-fA-F0-9]{40}$/.test(trimmed);
   }, []);
+
+  // Convert ETH input to Wei string using BigInt
+  const ethToWeiString = useCallback((ethStr: string): string => {
+    try {
+      const trimmed = ethStr.trim();
+      if (!trimmed) return '0';
+      if (trimmed.startsWith('0x')) return trimmed;
+      if (!trimmed.includes('.') && trimmed.length > 10) return trimmed;
+      const val = parseFloat(trimmed);
+      if (isNaN(val) || val <= 0) return '0';
+      const [whole, frac = ''] = trimmed.split('.');
+      const paddedFrac = frac.padEnd(18, '0').slice(0, 18);
+      const weiVal = BigInt(whole || '0') * BigInt('1000000000000000000') + BigInt(paddedFrac);
+      return weiVal.toString();
+    } catch {
+      return DEFAULT_ETH_VALUE_WEI;
+    }
+  }, []);
+
+  // Fetch next unused slot dynamically from relay bids
+  const fetchNextSuggestedSlot = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/relay/bids`).catch(() => null);
+      if (res && res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const validSlots = data
+            .map((b: { slot?: number | string }) => Number(b.slot))
+            .filter((s: number) => !isNaN(s) && s > 0);
+          if (validSlots.length > 0) {
+            const maxSlot = Math.max(...validSlots);
+            setAuctionSlot(maxSlot + 1);
+            return;
+          }
+        }
+      }
+    } catch {
+      // fallback gracefully
+    }
+    setAuctionSlot((prev) => (prev > 0 ? prev : 100));
+  }, []);
+
+  // Load Relay Auction demo scenario
+  const loadExampleRelayAuction = useCallback(() => {
+    const freshBids: BuilderBidInput[] = [
+      {
+        id: `bid_a_${Date.now()}`,
+        builder_id: 'Builder A (Compliant)',
+        bid_value_eth: '2.0',
+        fee_recipient: '0x0330070fd38ec3bb94f58fa55d40368271e9e54a',
+        txs: [
+          {
+            id: `tx_a_${Date.now()}_1`,
+            sender: '0x1111111111111111111111111111111111111111',
+            recipient: '0x2222222222222222222222222222222222222222',
+            value: '1000000000000000000',
+          },
+        ],
+      },
+      {
+        id: `bid_b_${Date.now() + 1}`,
+        builder_id: 'Builder B (Sanctioned Tx, 2.5 ETH)',
+        bid_value_eth: '2.5',
+        fee_recipient: '0x038989cbb1710c72b9920dc4fa529158f463e72c',
+        txs: [
+          {
+            id: `tx_b_${Date.now() + 1}_1`,
+            sender: '0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b',
+            recipient: '0x2222222222222222222222222222222222222222',
+            value: '500000000000000000',
+          },
+        ],
+      },
+      {
+        id: `bid_c_${Date.now() + 2}`,
+        builder_id: 'Builder C (Sanctioned Fee, 1.8 ETH)',
+        bid_value_eth: '1.8',
+        fee_recipient: '0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b',
+        txs: [
+          {
+            id: `tx_c_${Date.now() + 2}_1`,
+            sender: '0x1111111111111111111111111111111111111111',
+            recipient: '0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc',
+            value: '100000000000000000',
+          },
+        ],
+      },
+    ];
+    setBuilderBids(freshBids);
+    setAuctionValidationErrors(null);
+    setAuctionResult(null);
+    fetchNextSuggestedSlot();
+    playRetroBleep(587.33, 'triangle', 0.12);
+  }, [fetchNextSuggestedSlot, playRetroBleep]);
+
+  // Builder bid manipulation
+  const addBuilderBid = useCallback(() => {
+    if (builderBids.length >= 5) return;
+    const letter = String.fromCharCode(65 + builderBids.length);
+    setBuilderBids((prev) => [
+      ...prev,
+      {
+        id: `bid_${Date.now()}_${Math.random()}`,
+        builder_id: `Builder ${letter}`,
+        bid_value_eth: '1.5',
+        fee_recipient: '0x0330070fd38ec3bb94f58fa55d40368271e9e54a',
+        txs: [
+          {
+            id: `tx_${Date.now()}_${Math.random()}`,
+            sender: '0x1111111111111111111111111111111111111111',
+            recipient: '0x2222222222222222222222222222222222222222',
+            value: DEFAULT_ETH_VALUE_WEI,
+          },
+        ],
+      },
+    ]);
+  }, [builderBids.length]);
+
+  const removeBuilderBid = useCallback((bidId: string) => {
+    setBuilderBids((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((b) => b.id !== bidId);
+    });
+  }, []);
+
+  const updateBuilderBid = useCallback((bidId: string, field: keyof BuilderBidInput, value: string) => {
+    setBuilderBids((prev) =>
+      prev.map((b) => (b.id === bidId ? { ...b, [field]: value } : b))
+    );
+    setAuctionValidationErrors(null);
+  }, []);
+
+  const addTxToBid = useCallback((bidId: string) => {
+    setBuilderBids((prev) =>
+      prev.map((b) => {
+        if (b.id !== bidId) return b;
+        if (b.txs.length >= 5) return b;
+        return {
+          ...b,
+          txs: [
+            ...b.txs,
+            {
+              id: `tx_${Date.now()}_${Math.random()}`,
+              sender: '0x1111111111111111111111111111111111111111',
+              recipient: '0x2222222222222222222222222222222222222222',
+              value: DEFAULT_ETH_VALUE_WEI,
+            },
+          ],
+        };
+      })
+    );
+  }, []);
+
+  const removeTxFromBid = useCallback((bidId: string, txId: string) => {
+    setBuilderBids((prev) =>
+      prev.map((b) => {
+        if (b.id !== bidId) return b;
+        if (b.txs.length <= 1) return b;
+        return {
+          ...b,
+          txs: b.txs.filter((t) => t.id !== txId),
+        };
+      })
+    );
+  }, []);
+
+  const updateTxInBid = useCallback((bidId: string, txId: string, field: keyof CustomTxRow, val: string) => {
+    setBuilderBids((prev) =>
+      prev.map((b) => {
+        if (b.id !== bidId) return b;
+        return {
+          ...b,
+          txs: b.txs.map((t) => (t.id === txId ? { ...t, [field]: val } : t)),
+        };
+      })
+    );
+    setAuctionValidationErrors(null);
+  }, []);
+
+  // Submit Relay Auction dispatches
+  const handleSubmitRelayAuction = useCallback(async () => {
+    if (isSubmittingAuction) return;
+
+    // 1. Client validation
+    const errs: string[] = [];
+    if (!auctionSlot || auctionSlot <= 0) {
+      errs.push('A valid positive target slot number is required.');
+    }
+    if (!builderBids || builderBids.length === 0) {
+      errs.push('At least one builder bid is required.');
+    }
+
+    builderBids.forEach((bid, bIdx) => {
+      const bLabel = bid.builder_id?.trim() || `Bid #${bIdx + 1}`;
+      if (!bid.builder_id?.trim()) {
+        errs.push(`${bLabel}: Builder label is required.`);
+      }
+      if (!bid.fee_recipient?.trim() || !isValidAddress(bid.fee_recipient.trim())) {
+        errs.push(`${bLabel}: Fee recipient must be a valid 0x 40-hex character address.`);
+      }
+      const ethNum = parseFloat(bid.bid_value_eth);
+      if (isNaN(ethNum) || ethNum <= 0) {
+        errs.push(`${bLabel}: Bid value must be a positive number in ETH.`);
+      }
+      if (!bid.txs || bid.txs.length === 0) {
+        errs.push(`${bLabel}: At least 1 transaction is required in candidate block.`);
+      }
+      bid.txs.forEach((tx, tIdx) => {
+        if (!tx.sender?.trim() || !isValidAddress(tx.sender.trim())) {
+          errs.push(`${bLabel} Tx #${tIdx + 1}: Sender must be a valid 0x 40-hex character address.`);
+        }
+        if (!tx.recipient?.trim() || !isValidAddress(tx.recipient.trim())) {
+          errs.push(`${bLabel} Tx #${tIdx + 1}: Recipient must be a valid 0x 40-hex character address.`);
+        }
+      });
+    });
+
+    if (errs.length > 0) {
+      setAuctionValidationErrors(errs);
+      return;
+    }
+
+    setAuctionValidationErrors(null);
+    setIsSubmittingAuction(true);
+    setAuctionResult(null);
+    setAuctionProgress({ current: 0, total: builderBids.length });
+    playRetroBleep(440, 'sine', 0.15);
+
+    const submissionPerBidErrors: Record<string, string> = {};
+
+    // 2. Staggered dispatch to /api/relay/submit_bid
+    for (let i = 0; i < builderBids.length; i++) {
+      const bid = builderBids[i];
+      setAuctionProgress({
+        current: i + 1,
+        total: builderBids.length,
+        currentBuilder: bid.builder_id,
+      });
+
+      const blockHashChars = Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      const pubkeyChars = Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      const valueWei = ethToWeiString(bid.bid_value_eth);
+
+      const payload = {
+        slot: auctionSlot,
+        block_hash: `0x${blockHashChars}`,
+        builder_id: bid.builder_id.trim(),
+        builder_pubkey: `0x${pubkeyChars}`,
+        fee_recipient: bid.fee_recipient.trim(),
+        value_wei: valueWei,
+        txs: bid.txs.map((t) => ({
+          hash: t.tx_hash?.trim() || `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`,
+          sender: t.sender.trim(),
+          recipient: t.recipient.trim(),
+          value: t.value?.trim() || DEFAULT_ETH_VALUE_WEI,
+          bundle_id: null,
+        })),
+      };
+
+      try {
+        const resp = await fetch(`${API_URL}/api/relay/submit_bid`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          submissionPerBidErrors[bid.builder_id] = errData.error || `HTTP ${resp.status} Relay Error`;
+        }
+      } catch (err: unknown) {
+        submissionPerBidErrors[bid.builder_id] = err instanceof Error ? err.message : 'Network error';
+      }
+
+      if (i < builderBids.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, SUBMISSION_STAGGER_MS));
+      }
+    }
+
+    // 3. Brief wait for asynchronous relay audit execution
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    // 4. Fetch Best Header
+    let winningHeader: AuctionHeaderResponse | null = null;
+    let isFailClosed = false;
+    let failClosedReason = '';
+
+    try {
+      const headerResp = await fetch(`${API_URL}/api/relay/best_header?slot=${auctionSlot}`).catch(() => null);
+      if (headerResp && headerResp.ok) {
+        winningHeader = await headerResp.json();
+      } else if (headerResp && headerResp.status === 404) {
+        isFailClosed = true;
+        const errData = await headerResp.json().catch(() => ({}));
+        failClosedReason = errData.error || `No compliant header found for slot ${auctionSlot}`;
+      } else {
+        isFailClosed = true;
+        failClosedReason = `Relay auction completed without winning compliant header for slot ${auctionSlot}`;
+      }
+    } catch (err: unknown) {
+      isFailClosed = true;
+      failClosedReason = err instanceof Error ? err.message : 'Failed to query auction header';
+    }
+
+    // 5. Fetch all bids for slot to display detailed audit results & reasons
+    let slotBids: StoredBidResult[] = [];
+    try {
+      const bidsResp = await fetch(`${API_URL}/api/relay/bids?slot=${auctionSlot}`).catch(() => null);
+      if (bidsResp && bidsResp.ok) {
+        slotBids = await bidsResp.json();
+      }
+    } catch {
+      // fallback
+    }
+
+    // Correlate results with submitted builder bids
+    const compiledBids: StoredBidResult[] = builderBids.map((b) => {
+      const match = slotBids.find((sb) => sb.builder_id === b.builder_id.trim());
+      if (match) {
+        return {
+          ...match,
+          error: submissionPerBidErrors[b.builder_id],
+        };
+      }
+      return {
+        slot: auctionSlot,
+        builder_id: b.builder_id,
+        fee_recipient: b.fee_recipient,
+        value_wei: ethToWeiString(b.bid_value_eth),
+        verdict: submissionPerBidErrors[b.builder_id] ? 'REJECTED' : 'PENDING',
+        reasons: submissionPerBidErrors[b.builder_id] ? [submissionPerBidErrors[b.builder_id]] : [],
+        error: submissionPerBidErrors[b.builder_id],
+      };
+    });
+
+    if (!winningHeader) {
+      isFailClosed = true;
+    }
+
+    setAuctionResult({
+      slot: auctionSlot,
+      winningHeader,
+      isFailClosed,
+      failClosedReason,
+      bids: compiledBids,
+      submittedAt: new Date().toLocaleTimeString(),
+    });
+
+    setIsSubmittingAuction(false);
+    setAuctionProgress(null);
+    playRetroBleep(659.25, 'triangle', 0.25);
+  }, [
+    API_URL,
+    auctionSlot,
+    builderBids,
+    ethToWeiString,
+    isSubmittingAuction,
+    isValidAddress,
+    playRetroBleep,
+  ]);
 
   // Load standard 3-transaction ALLOW / FLAG / BLOCK demo example
   const loadExampleTransactions = useCallback(() => {
@@ -1624,80 +2078,134 @@ export default function ArcadePage() {
           </div>
         </section>
 
-        {/* Custom Transaction Submission Panel (Collapsible) */}
+        {/* Custom Transaction & Relay Auction Submission Panel (Collapsible) */}
         {isCustomPanelOpen && (
           <section className="tactile-card bg-[#FBF1E2] rounded-3xl p-4 sm:p-5 flex flex-col gap-4 border-[3.5px] border-[#8F4C30] animate-in fade-in slide-in-from-top-3 duration-200">
             {/* Panel Header */}
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b-2 border-[#ECD0B3]">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-[#F8B436] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-[2px_2px_0_#6B341E]">
-                  ⚡
+                  {panelMode === 'relay_auction' ? '🏆' : '⚡'}
                 </div>
                 <div>
                   <h3 className="font-black text-sm sm:text-base text-[#5C2B1A]">
-                    Submit Custom Transactions for Live Demo
+                    {panelMode === 'relay_auction'
+                      ? 'Submit Competing Bids for Relay Auction'
+                      : 'Submit Custom Transactions for Live Demo'}
                   </h3>
                   <p className="text-xs text-[#8F4C30] font-bold">
-                    Inject arbitrary transactions through the engine and watch each animate across the arena
+                    {panelMode === 'relay_auction'
+                      ? 'Submit multi-builder candidate blocks to the PBS relay and watch compliance auction resolve live'
+                      : 'Inject arbitrary transactions through the engine and watch each animate across the arena'}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center flex-wrap gap-2">
-                {/* Quick-Fill Example Button */}
-                <button
-                  onClick={loadExampleTransactions}
-                  className="bg-[#FFF8EE] hover:bg-[#FFF0DF] border-2 border-[#8F4C30] text-[#692E19] px-3 py-1.5 rounded-xl font-black text-xs cursor-pointer shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
-                  title="Pre-fill form with standard ALLOW / FLAG / BLOCK demo transactions"
-                  id="btn-load-example"
-                >
-                  <span>✨</span>
-                  <span>Load Example: ALLOW / FLAG / BLOCK</span>
-                </button>
-
-                {/* Input Mode Toggle Pill */}
-                <div className="bg-[#ECD0B3] p-1 rounded-xl border-2 border-[#8F4C30] flex items-center gap-1">
+                {/* Mode Selector Pill (Explicit Choice) */}
+                <div className="bg-[#ECD0B3] p-1 rounded-2xl border-2 border-[#8F4C30] flex items-center gap-1 shadow-sm">
                   <button
+                    type="button"
                     onClick={() => {
-                      setCustomInputMode('form');
-                      setClientValidationError(null);
-                      setJsonError(null);
+                      setPanelMode('individual');
+                      setAuctionValidationErrors(null);
                     }}
-                    className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
-                      customInputMode === 'form'
+                    className={`px-3 py-1.5 rounded-xl font-black text-xs transition-all cursor-pointer flex items-center gap-1.5 ${
+                      panelMode === 'individual'
                         ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
                         : 'text-[#7F4932] hover:bg-[#E3C3A0]'
                     }`}
+                    id="mode-toggle-individual"
                   >
-                    📋 Quick-Add Form
+                    <span>⚡</span>
+                    <span>Screen Individually</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
-                      setCustomInputMode('json');
-                      setClientValidationError(null);
-                      if (!rawJson.trim() && formRows.length > 0) {
-                        setRawJson(
-                          JSON.stringify(
-                            formRows.map(({ sender, recipient, value }) => ({
-                              sender: sender || '0x...',
-                              recipient: recipient || '0x...',
-                              value: value || DEFAULT_ETH_VALUE_WEI,
-                            })),
-                            null,
-                            2
-                          )
-                        );
-                      }
+                      setPanelMode('relay_auction');
+                      fetchNextSuggestedSlot();
                     }}
-                    className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
-                      customInputMode === 'json'
-                        ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
+                    className={`px-3 py-1.5 rounded-xl font-black text-xs transition-all cursor-pointer flex items-center gap-1.5 ${
+                      panelMode === 'relay_auction'
+                        ? 'bg-[#48BB78] text-white border border-[#1D5E38] shadow-sm'
                         : 'text-[#7F4932] hover:bg-[#E3C3A0]'
                     }`}
+                    id="mode-toggle-relay-auction"
                   >
-                    {'{ }'} Raw JSON
+                    <span>🏆</span>
+                    <span>Relay Auction</span>
                   </button>
                 </div>
+
+                {/* Quick-Fill Example Button */}
+                {panelMode === 'individual' ? (
+                  <button
+                    onClick={loadExampleTransactions}
+                    className="bg-[#FFF8EE] hover:bg-[#FFF0DF] border-2 border-[#8F4C30] text-[#692E19] px-3 py-1.5 rounded-xl font-black text-xs cursor-pointer shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
+                    title="Pre-fill form with standard ALLOW / FLAG / BLOCK demo transactions"
+                    id="btn-load-example"
+                  >
+                    <span>✨</span>
+                    <span>Load Example: ALLOW / FLAG / BLOCK</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={loadExampleRelayAuction}
+                    className="bg-[#FFF8EE] hover:bg-[#FFF0DF] border-2 border-[#8F4C30] text-[#692E19] px-3 py-1.5 rounded-xl font-black text-xs cursor-pointer shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
+                    title="Pre-fill with 3 competing bids: Compliant Winner, Sanctioned Tx, Sanctioned Fee Recipient"
+                    id="btn-load-auction-example"
+                  >
+                    <span>✨</span>
+                    <span>Load Example: Compliant Winner vs Disqualified Bids</span>
+                  </button>
+                )}
+
+                {/* Input Sub-mode Pill (Only in Individual Mode) */}
+                {panelMode === 'individual' && (
+                  <div className="bg-[#ECD0B3] p-1 rounded-xl border-2 border-[#8F4C30] flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        setCustomInputMode('form');
+                        setClientValidationError(null);
+                        setJsonError(null);
+                      }}
+                      className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
+                        customInputMode === 'form'
+                          ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
+                          : 'text-[#7F4932] hover:bg-[#E3C3A0]'
+                      }`}
+                    >
+                      📋 Quick-Add Form
+                    </button>
+                    <button
+                      onClick={() => {
+                        setCustomInputMode('json');
+                        setClientValidationError(null);
+                        if (!rawJson.trim() && formRows.length > 0) {
+                          setRawJson(
+                            JSON.stringify(
+                              formRows.map(({ sender, recipient, value }) => ({
+                                sender: sender || '0x...',
+                                recipient: recipient || '0x...',
+                                value: value || DEFAULT_ETH_VALUE_WEI,
+                              })),
+                              null,
+                              2
+                            )
+                          );
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
+                        customInputMode === 'json'
+                          ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
+                          : 'text-[#7F4932] hover:bg-[#E3C3A0]'
+                      }`}
+                    >
+                      {'{ }'} Raw JSON
+                    </button>
+                  </div>
+                )}
 
                 {/* Close Panel Button */}
                 <button
@@ -1710,234 +2218,709 @@ export default function ArcadePage() {
               </div>
             </div>
 
-            {/* Mode 1: Quick-Add Form */}
-            {customInputMode === 'form' && (
-              <div className="flex flex-col gap-3">
-                {/* Column Headers */}
-                <div className="hidden sm:grid sm:grid-cols-12 gap-2 text-[11px] font-black uppercase tracking-wider text-[#8F4C30] px-1">
-                  <div className="col-span-1">#</div>
-                  <div className="col-span-5">Sender Address (0x...)</div>
-                  <div className="col-span-4">Recipient Address (0x...)</div>
-                  <div className="col-span-2">Value (Wei)</div>
-                </div>
-
-                {/* Rows Container (Scrolls cleanly after 5-6 rows up to 10) */}
-                <div className="max-h-[320px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                  {formRows.map((row, idx) => (
-                    <div
-                      key={row.id}
-                      className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center bg-[#FFF8EE] p-2.5 rounded-2xl border-2 border-[#ECD0B3] hover:border-[#8F4C30] transition-colors"
-                    >
-                      {/* Row Index */}
-                      <div className="col-span-1 flex items-center gap-1">
-                        <span className="w-6 h-6 rounded-lg bg-[#ECD0B3] font-mono font-black text-xs text-[#6A2F1B] flex items-center justify-center">
-                          {idx + 1}
-                        </span>
-                      </div>
-
-                      {/* Sender Input */}
-                      <div className="col-span-5">
-                        <input
-                          type="text"
-                          value={row.sender}
-                          onChange={(e) => updateFormRow(row.id, 'sender', e.target.value)}
-                          placeholder="0x... (Sender EOA)"
-                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
-                        />
-                      </div>
-
-                      {/* Recipient Input */}
-                      <div className="col-span-4">
-                        <input
-                          type="text"
-                          value={row.recipient}
-                          onChange={(e) => updateFormRow(row.id, 'recipient', e.target.value)}
-                          placeholder="0x... (Recipient / Contract)"
-                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
-                        />
-                      </div>
-
-                      {/* Value Input + Remove Button */}
-                      <div className="col-span-2 flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          value={row.value}
-                          onChange={(e) => updateFormRow(row.id, 'value', e.target.value)}
-                          placeholder="1000000000000000000"
-                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-2 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
-                        />
-                        <button
-                          onClick={() => removeFormRow(row.id)}
-                          disabled={formRows.length <= 1}
-                          className={`w-7 h-7 shrink-0 rounded-xl border-2 border-[#8F4C30] flex items-center justify-center text-xs font-bold transition-all ${
-                            formRows.length <= 1
-                              ? 'opacity-30 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
-                              : 'bg-[#FFF2DE] hover:bg-[#FED7D7] text-[#9B2C2C] hover:border-[#E53E3E] cursor-pointer active:scale-90'
-                          }`}
-                          title={formRows.length <= 1 ? 'Minimum 1 transaction required' : 'Remove row'}
-                        >
-                          ✕
-                        </button>
-                      </div>
+            {/* ========================================================= */}
+            {/* MODE A: SCREEN INDIVIDUALLY                               */}
+            {/* ========================================================= */}
+            {panelMode === 'individual' && (
+              <>
+                {/* Mode 1: Quick-Add Form */}
+                {customInputMode === 'form' && (
+                  <div className="flex flex-col gap-3">
+                    {/* Column Headers */}
+                    <div className="hidden sm:grid sm:grid-cols-12 gap-2 text-[11px] font-black uppercase tracking-wider text-[#8F4C30] px-1">
+                      <div className="col-span-1">#</div>
+                      <div className="col-span-5">Sender Address (0x...)</div>
+                      <div className="col-span-4">Recipient Address (0x...)</div>
+                      <div className="col-span-2">Value (Wei)</div>
                     </div>
-                  ))}
-                </div>
 
-                {/* Form Bottom Controls */}
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    onClick={addFormRow}
-                    disabled={formRows.length >= 10}
-                    className={`px-3 py-1.5 rounded-xl border-2 border-dashed border-[#8F4C30] font-bold text-xs flex items-center gap-1.5 transition-all ${
-                      formRows.length >= 10
-                        ? 'opacity-40 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
-                        : 'bg-[#FFF8EE] hover:bg-[#FFF2DF] text-[#7A3F29] cursor-pointer hover:scale-[1.02] active:scale-95'
-                    }`}
-                  >
-                    <span>＋</span>
-                    <span>Add Another Transaction ({formRows.length}/10)</span>
-                  </button>
+                    {/* Rows Container */}
+                    <div className="max-h-[320px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                      {formRows.map((row, idx) => (
+                        <div
+                          key={row.id}
+                          className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center bg-[#FFF8EE] p-2.5 rounded-2xl border-2 border-[#ECD0B3] hover:border-[#8F4C30] transition-colors"
+                        >
+                          {/* Row Index */}
+                          <div className="col-span-1 flex items-center gap-1">
+                            <span className="w-6 h-6 rounded-lg bg-[#ECD0B3] font-mono font-black text-xs text-[#6A2F1B] flex items-center justify-center">
+                              {idx + 1}
+                            </span>
+                          </div>
 
-                  <span className="text-[11px] text-[#8F4C30] font-bold">
-                    Values in wei (1 ETH = 10^18 wei)
-                  </span>
-                </div>
-              </div>
-            )}
+                          {/* Sender Input */}
+                          <div className="col-span-5">
+                            <input
+                              type="text"
+                              value={row.sender}
+                              onChange={(e) => updateFormRow(row.id, 'sender', e.target.value)}
+                              placeholder="0x... (Sender EOA)"
+                              className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                            />
+                          </div>
 
-            {/* Mode 2: Raw JSON Paste */}
-            {customInputMode === 'json' && (
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between text-xs text-[#8F4C30] font-bold">
-                  <span>Paste JSON array of transactions:</span>
-                  <span className="font-mono text-[11px] text-[#A0644B]">
-                    [&#123; &quot;sender&quot;: &quot;0x...&quot;, &quot;recipient&quot;: &quot;0x...&quot;, &quot;value&quot;?: &quot;...&quot; &#125;]
-                  </span>
-                </div>
-                <textarea
-                  value={rawJson}
-                  onChange={(e) => handleJsonChange(e.target.value)}
-                  placeholder={`[\n  {\n    "sender": "0x1111111111111111111111111111111111111111",\n    "recipient": "0x2222222222222222222222222222222222222222",\n    "value": "1000000000000000000"\n  }\n]`}
-                  className="w-full h-44 font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-2xl p-3 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78] resize-y"
-                />
-              </div>
-            )}
+                          {/* Recipient Input */}
+                          <div className="col-span-4">
+                            <input
+                              type="text"
+                              value={row.recipient}
+                              onChange={(e) => updateFormRow(row.id, 'recipient', e.target.value)}
+                              placeholder="0x... (Recipient / Contract)"
+                              className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                            />
+                          </div>
 
-            {/* Inline Validation Errors */}
-            {clientValidationError && (
-              <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
-                <span>⚠</span>
-                <span>{clientValidationError}</span>
-              </div>
-            )}
+                          {/* Value Input + Remove Button */}
+                          <div className="col-span-2 flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={row.value}
+                              onChange={(e) => updateFormRow(row.id, 'value', e.target.value)}
+                              placeholder="1000000000000000000"
+                              className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-2 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                            />
+                            <button
+                              onClick={() => removeFormRow(row.id)}
+                              disabled={formRows.length <= 1}
+                              className={`w-7 h-7 shrink-0 rounded-xl border-2 border-[#8F4C30] flex items-center justify-center text-xs font-bold transition-all ${
+                                formRows.length <= 1
+                                  ? 'opacity-30 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                                  : 'bg-[#FFF2DE] hover:bg-[#FED7D7] text-[#9B2C2C] hover:border-[#E53E3E] cursor-pointer active:scale-90'
+                              }`}
+                              title={formRows.length <= 1 ? 'Minimum 1 transaction required' : 'Remove row'}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
 
-            {jsonError && (
-              <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
-                <span>✕</span>
-                <span>{jsonError}</span>
-              </div>
-            )}
+                    {/* Form Bottom Controls */}
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        onClick={addFormRow}
+                        disabled={formRows.length >= 10}
+                        className={`px-3 py-1.5 rounded-xl border-2 border-dashed border-[#8F4C30] font-bold text-xs flex items-center gap-1.5 transition-all ${
+                          formRows.length >= 10
+                            ? 'opacity-40 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                            : 'bg-[#FFF8EE] hover:bg-[#FFF2DF] text-[#7A3F29] cursor-pointer hover:scale-[1.02] active:scale-95'
+                        }`}
+                      >
+                        <span>＋</span>
+                        <span>Add Another Transaction ({formRows.length}/10)</span>
+                      </button>
 
-            {/* Panel Footer: Submit Action & Stagger Telemetry */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#ECD0B3]">
-              <div className="flex items-center flex-wrap gap-2.5">
-                {/* Submit All Button */}
-                <button
-                  onClick={handleSubmitCustomTransactions}
-                  disabled={isSubmittingCustom || Boolean(jsonError)}
-                  className={`btn-3d btn-3d-green font-black text-xs sm:text-sm px-5 py-2.5 rounded-2xl flex items-center gap-2 tracking-wider cursor-pointer ${
-                    isSubmittingCustom || Boolean(jsonError) ? 'opacity-60 cursor-not-allowed' : ''
-                  }`}
-                  id="btn-submit-custom-txs"
-                >
-                  <span className="text-sm">{isSubmittingCustom ? '⏳' : '▶'}</span>
-                  <span>
-                    {isSubmittingCustom
-                      ? `SCREENING (${submissionProgress?.current}/${submissionProgress?.total})...`
-                      : `SUBMIT ALL (${customInputMode === 'form' ? formRows.length : 'JSON'})`}
-                  </span>
-                </button>
-
-                {/* Inline Summary Badge */}
-                {submissionSummary && (
-                  <span className="text-xs font-mono font-black text-[#235839] bg-[#DEF4E6] px-3.5 py-2 rounded-xl border border-[#7DD89F] shadow-sm animate-in fade-in">
-                    ✓ {submissionSummary}
-                  </span>
+                      <span className="text-[11px] text-[#8F4C30] font-bold">
+                        Values in wei (1 ETH = 10^18 wei)
+                      </span>
+                    </div>
+                  </div>
                 )}
-              </div>
 
-              <div className="text-[11px] font-mono font-bold text-[#8F4C30] flex items-center gap-1.5 bg-[#FFF2DE] px-3 py-1.5 rounded-xl border border-[#ECD0B3]">
-                <span>⚡</span>
-                <span>400ms stagger between dispatches for distinct arena animations</span>
-              </div>
-            </div>
+                {/* Mode 2: Raw JSON Paste */}
+                {customInputMode === 'json' && (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between text-xs text-[#8F4C30] font-bold">
+                      <span>Paste JSON array of transactions:</span>
+                      <span className="font-mono text-[11px] text-[#A0644B]">
+                        [&#123; &quot;sender&quot;: &quot;0x...&quot;, &quot;recipient&quot;: &quot;0x...&quot;, &quot;value&quot;?: &quot;...&quot; &#125;]
+                      </span>
+                    </div>
+                    <textarea
+                      value={rawJson}
+                      onChange={(e) => handleJsonChange(e.target.value)}
+                      placeholder={`[\n  {\n    "sender": "0x1111111111111111111111111111111111111111",\n    "recipient": "0x2222222222222222222222222222222222222222",\n    "value": "1000000000000000000"\n  }\n]`}
+                      className="w-full h-44 font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-2xl p-3 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78] resize-y"
+                    />
+                  </div>
+                )}
 
-            {/* Real-time Submission Results Cards */}
-            {submissionResults.length > 0 && (
-              <div className="mt-1 space-y-2 pt-2 border-t border-[#ECD0B3]">
-                <div className="flex items-center justify-between text-xs font-black text-[#692E19]">
-                  <span>DISPATCH AUDIT LOG ({submissionResults.length}):</span>
-                  <button
-                    onClick={() => setSubmissionResults([])}
-                    className="text-[10px] text-[#8F4C30] hover:text-[#5C2B1A] underline cursor-pointer"
-                  >
-                    Clear Results
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
-                  {submissionResults.map((res) => (
-                    <div
-                      key={res.index}
-                      className="p-2.5 rounded-xl bg-white border-2 border-[#ECD0B3] shadow-sm flex flex-col justify-between gap-1.5 text-xs"
+                {/* Inline Validation Errors */}
+                {clientValidationError && (
+                  <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
+                    <span>⚠</span>
+                    <span>{clientValidationError}</span>
+                  </div>
+                )}
+
+                {jsonError && (
+                  <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
+                    <span>✕</span>
+                    <span>{jsonError}</span>
+                  </div>
+                )}
+
+                {/* Individual Submit Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#ECD0B3]">
+                  <div className="flex items-center flex-wrap gap-2.5">
+                    <button
+                      onClick={handleSubmitCustomTransactions}
+                      disabled={isSubmittingCustom || Boolean(jsonError)}
+                      className={`btn-3d btn-3d-green font-black text-xs sm:text-sm px-5 py-2.5 rounded-2xl flex items-center gap-2 tracking-wider cursor-pointer ${
+                        isSubmittingCustom || Boolean(jsonError) ? 'opacity-60 cursor-not-allowed' : ''
+                      }`}
+                      id="btn-submit-custom-txs"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono font-bold text-[#8F4C30]">Tx #{res.index}</span>
-                        {res.decision ? (
-                          <span
-                            className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
-                              res.decision === 'ALLOW'
-                                ? 'bg-[#DEF4E6] text-[#235839] border border-[#7DD89F]'
-                                : res.decision === 'FLAG'
-                                ? 'bg-[#FEF6E4] text-[#8C5D17] border border-[#F6CB63]'
-                                : 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                      <span className="text-sm">{isSubmittingCustom ? '⏳' : '▶'}</span>
+                      <span>
+                        {isSubmittingCustom
+                          ? `SCREENING (${submissionProgress?.current}/${submissionProgress?.total})...`
+                          : `SUBMIT ALL (${customInputMode === 'form' ? formRows.length : 'JSON'})`}
+                      </span>
+                    </button>
+
+                    {submissionSummary && (
+                      <span className="text-xs font-mono font-black text-[#235839] bg-[#DEF4E6] px-3.5 py-2 rounded-xl border border-[#7DD89F] shadow-sm animate-in fade-in">
+                        ✓ {submissionSummary}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] font-mono font-bold text-[#8F4C30] flex items-center gap-1.5 bg-[#FFF2DE] px-3 py-1.5 rounded-xl border border-[#ECD0B3]">
+                    <span>⚡</span>
+                    <span>400ms stagger between dispatches for distinct arena animations</span>
+                  </div>
+                </div>
+
+                {/* Individual Submission Audit Results */}
+                {submissionResults.length > 0 && (
+                  <div className="mt-1 space-y-2 pt-2 border-t border-[#ECD0B3]">
+                    <div className="flex items-center justify-between text-xs font-black text-[#692E19]">
+                      <span>DISPATCH AUDIT LOG ({submissionResults.length}):</span>
+                      <button
+                        onClick={() => setSubmissionResults([])}
+                        className="text-[10px] text-[#8F4C30] hover:text-[#5C2B1A] underline cursor-pointer"
+                      >
+                        Clear Results
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                      {submissionResults.map((res) => (
+                        <div
+                          key={res.index}
+                          className="p-2.5 rounded-xl bg-white border-2 border-[#ECD0B3] shadow-sm flex flex-col justify-between gap-1.5 text-xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-bold text-[#8F4C30]">Tx #{res.index}</span>
+                            {res.decision ? (
+                              <span
+                                className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                                  res.decision === 'ALLOW'
+                                    ? 'bg-[#DEF4E6] text-[#235839] border border-[#7DD89F]'
+                                    : res.decision === 'FLAG'
+                                    ? 'bg-[#FEF6E4] text-[#8C5D17] border border-[#F6CB63]'
+                                    : 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                                }`}
+                              >
+                                {res.decision} (Risk: {res.risk_score})
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]">
+                                FAILED
+                              </span>
+                            )}
+                          </div>
+                          <div className="font-mono text-[10px] text-[#5C2B1A] truncate" title={res.tx_hash}>
+                            Hash: {shortAddr(res.tx_hash)}
+                          </div>
+                          <div className="font-mono text-[10px] text-[#7A3F29] truncate">
+                            {shortAddr(res.sender)} → {shortAddr(res.recipient)}
+                          </div>
+                          {res.error ? (
+                            <div className="text-[10px] text-red-600 font-bold bg-red-50 p-1 rounded">
+                              {res.error}
+                            </div>
+                          ) : (
+                            res.reasons &&
+                            res.reasons.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {res.reasons.map((reason, rIdx) => (
+                                  <span
+                                    key={rIdx}
+                                    className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#FFF2DE] border border-[#ECD0B3] text-[#7A3F29]"
+                                  >
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            )
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ========================================================= */}
+            {/* MODE B: RELAY AUCTION (NEW)                               */}
+            {/* ========================================================= */}
+            {panelMode === 'relay_auction' && (
+              <div className="flex flex-col gap-4">
+                {/* Target Slot Configuration Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#FFF8EE] p-3 rounded-2xl border-2 border-[#ECD0B3]">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xs font-black text-[#5C2B1A] uppercase tracking-wide">
+                      Target Slot:
+                    </span>
+                    <input
+                      type="number"
+                      value={auctionSlot}
+                      onChange={(e) => setAuctionSlot(Number(e.target.value) || 0)}
+                      className="w-24 bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-2.5 py-1 text-xs font-mono font-black text-[#5C2B1A] focus:outline-none focus:border-[#48BB78]"
+                    />
+                    <button
+                      type="button"
+                      onClick={fetchNextSuggestedSlot}
+                      className="px-2.5 py-1 rounded-xl border border-[#8F4C30] bg-[#ECD0B3] hover:bg-[#E3C3A0] text-[#692E19] font-black text-xs cursor-pointer shadow-xs active:scale-95 transition-all flex items-center gap-1"
+                      title="Fetch highest slot from relay bids and increment"
+                    >
+                      <span>↻</span> Auto-Suggest Next Slot
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-[#8F4C30] font-bold">
+                    PBS Auction Rule: Highest compliant bid wins the header; tainted bids are disqualified.
+                  </div>
+                </div>
+
+                {/* Competing Builder Bids List */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs font-black text-[#5C2B1A] uppercase tracking-wider">
+                    <span>Competing Builder Bids ({builderBids.length}/5):</span>
+                    <span className="text-[11px] text-[#8F4C30] font-normal lowercase">
+                      configure builder label, bid value, fee recipient, and constituent block transactions
+                    </span>
+                  </div>
+
+                  {builderBids.map((bid, bIdx) => (
+                    <div
+                      key={bid.id}
+                      className="bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-2xl p-3.5 space-y-3 shadow-sm hover:border-[#5C2B1A] transition-colors"
+                    >
+                      {/* Top Row: Bid Meta */}
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center pb-2 border-b border-[#F0DFCD]">
+                        {/* Builder Label */}
+                        <div className="md:col-span-4 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-lg bg-[#F8B436] border border-[#8F4C30] font-mono font-black text-xs text-[#5C2B1A] flex items-center justify-center shrink-0">
+                            {bIdx + 1}
+                          </span>
+                          <input
+                            type="text"
+                            value={bid.builder_id}
+                            onChange={(e) => updateBuilderBid(bid.id, 'builder_id', e.target.value)}
+                            placeholder="Builder Label (e.g. Builder A)"
+                            className="w-full text-xs font-black text-[#5C2B1A] bg-[#FFF8EE] border border-[#8F4C30] rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-[#48BB78]"
+                          />
+                        </div>
+
+                        {/* Bid Value (ETH) */}
+                        <div className="md:col-span-3 flex items-center gap-1.5">
+                          <label className="text-[11px] font-bold text-[#8F4C30] shrink-0">Bid:</label>
+                          <input
+                            type="text"
+                            value={bid.bid_value_eth}
+                            onChange={(e) => updateBuilderBid(bid.id, 'bid_value_eth', e.target.value)}
+                            placeholder="2.0"
+                            className="w-20 font-mono font-black text-xs text-[#5C2B1A] bg-[#FFF8EE] border border-[#8F4C30] rounded-xl px-2 py-1.5 focus:outline-none focus:border-[#48BB78]"
+                          />
+                          <span className="text-xs font-mono font-black text-[#5C2B1A]">ETH</span>
+                        </div>
+
+                        {/* Fee Recipient */}
+                        <div className="md:col-span-4 flex items-center gap-1.5">
+                          <label className="text-[11px] font-bold text-[#8F4C30] shrink-0">Fee Recipient:</label>
+                          <input
+                            type="text"
+                            value={bid.fee_recipient}
+                            onChange={(e) => updateBuilderBid(bid.id, 'fee_recipient', e.target.value)}
+                            placeholder="0x... (Fee EOA)"
+                            className="w-full font-mono text-xs text-[#5C2B1A] bg-[#FFF8EE] border border-[#8F4C30] rounded-xl px-2 py-1.5 focus:outline-none focus:border-[#48BB78]"
+                          />
+                        </div>
+
+                        {/* Delete Bid Button */}
+                        <div className="md:col-span-1 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => removeBuilderBid(bid.id)}
+                            disabled={builderBids.length <= 1}
+                            className={`w-7 h-7 rounded-xl border border-[#8F4C30] flex items-center justify-center text-xs font-bold transition-all ${
+                              builderBids.length <= 1
+                                ? 'opacity-30 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                                : 'bg-[#FFF2DE] hover:bg-[#FED7D7] text-[#9B2C2C] cursor-pointer'
+                            }`}
+                            title={builderBids.length <= 1 ? 'Minimum 1 bid required' : 'Remove builder bid'}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Constituent Block Transactions Section */}
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between text-[11px] font-bold text-[#8F4C30]">
+                          <span>Constituent Transactions in Proposed Block ({bid.txs.length}):</span>
+                          <button
+                            type="button"
+                            onClick={() => addTxToBid(bid.id)}
+                            disabled={bid.txs.length >= 5}
+                            className={`text-[10px] font-black px-2 py-0.5 rounded-lg border border-[#8F4C30] transition-all ${
+                              bid.txs.length >= 5
+                                ? 'opacity-40 cursor-not-allowed bg-[#ECD0B3]'
+                                : 'bg-[#FFF8EE] hover:bg-[#FFF0DF] text-[#692E19] cursor-pointer'
                             }`}
                           >
-                            {res.decision} (Risk: {res.risk_score})
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]">
-                            FAILED
-                          </span>
-                        )}
-                      </div>
-                      <div className="font-mono text-[10px] text-[#5C2B1A] truncate" title={res.tx_hash}>
-                        Hash: {shortAddr(res.tx_hash)}
-                      </div>
-                      <div className="font-mono text-[10px] text-[#7A3F29] truncate">
-                        {shortAddr(res.sender)} → {shortAddr(res.recipient)}
-                      </div>
-                      {res.error ? (
-                        <div className="text-[10px] text-red-600 font-bold bg-red-50 p-1 rounded">
-                          {res.error}
+                            ＋ Add Tx to Bid ({bid.txs.length}/5)
+                          </button>
                         </div>
-                      ) : (
-                        res.reasons &&
-                        res.reasons.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {res.reasons.map((reason, rIdx) => (
-                              <span
-                                key={rIdx}
-                                className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#FFF2DE] border border-[#ECD0B3] text-[#7A3F29]"
-                              >
-                                {reason}
-                              </span>
-                            ))}
-                          </div>
-                        )
-                      )}
+
+                        <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 custom-scrollbar">
+                          {bid.txs.map((tx, tIdx) => (
+                            <div
+                              key={tx.id}
+                              className="grid grid-cols-1 sm:grid-cols-12 gap-1.5 items-center bg-[#FFF8EE] p-1.5 rounded-xl border border-[#ECD0B3]"
+                            >
+                              <div className="sm:col-span-1 text-[10px] font-mono font-bold text-[#8F4C30] text-center">
+                                #{tIdx + 1}
+                              </div>
+                              <div className="sm:col-span-5">
+                                <input
+                                  type="text"
+                                  value={tx.sender}
+                                  onChange={(e) => updateTxInBid(bid.id, tx.id, 'sender', e.target.value)}
+                                  placeholder="0x... (Sender)"
+                                  className="w-full font-mono text-[11px] bg-white border border-[#8F4C30] rounded-lg px-2 py-1 text-[#5C2B1A] focus:outline-none focus:border-[#48BB78]"
+                                />
+                              </div>
+                              <div className="sm:col-span-4">
+                                <input
+                                  type="text"
+                                  value={tx.recipient}
+                                  onChange={(e) => updateTxInBid(bid.id, tx.id, 'recipient', e.target.value)}
+                                  placeholder="0x... (Recipient)"
+                                  className="w-full font-mono text-[11px] bg-white border border-[#8F4C30] rounded-lg px-2 py-1 text-[#5C2B1A] focus:outline-none focus:border-[#48BB78]"
+                                />
+                              </div>
+                              <div className="sm:col-span-2 flex items-center gap-1">
+                                <input
+                                  type="text"
+                                  value={tx.value}
+                                  onChange={(e) => updateTxInBid(bid.id, tx.id, 'value', e.target.value)}
+                                  placeholder="1000000000000000000"
+                                  className="w-full font-mono text-[11px] bg-white border border-[#8F4C30] rounded-lg px-1.5 py-1 text-[#5C2B1A] focus:outline-none focus:border-[#48BB78]"
+                                  title="Value in Wei"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeTxFromBid(bid.id, tx.id)}
+                                  disabled={bid.txs.length <= 1}
+                                  className={`w-5 h-5 shrink-0 rounded-lg border border-[#8F4C30] flex items-center justify-center text-[10px] font-bold ${
+                                    bid.txs.length <= 1
+                                      ? 'opacity-30 cursor-not-allowed bg-[#ECD0B3]'
+                                      : 'bg-[#FFF2DE] hover:bg-[#FED7D7] text-[#9B2C2C] cursor-pointer'
+                                  }`}
+                                  title="Remove transaction"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   ))}
+
+                  {/* Add Competing Builder Bid Button */}
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={addBuilderBid}
+                      disabled={builderBids.length >= 5}
+                      className={`px-3 py-1.5 rounded-xl border-2 border-dashed border-[#8F4C30] font-bold text-xs flex items-center gap-1.5 transition-all ${
+                        builderBids.length >= 5
+                          ? 'opacity-40 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                          : 'bg-[#FFF8EE] hover:bg-[#FFF2DF] text-[#7A3F29] cursor-pointer hover:scale-[1.01] active:scale-95'
+                      }`}
+                    >
+                      <span>＋</span>
+                      <span>Add Another Competing Builder Bid ({builderBids.length}/5)</span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Validation Errors */}
+                {auctionValidationErrors && auctionValidationErrors.length > 0 && (
+                  <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl text-xs text-[#9B2C2C] space-y-1 animate-in fade-in">
+                    <div className="font-black flex items-center gap-1.5">
+                      <span>⚠</span>
+                      <span>Please fix the following issues before submitting auction:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 pl-1 font-semibold">
+                      {auctionValidationErrors.map((err, eIdx) => (
+                        <li key={eIdx}>{err}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Relay Auction Submit Action Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#ECD0B3]">
+                  <div className="flex items-center flex-wrap gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleSubmitRelayAuction}
+                      disabled={isSubmittingAuction}
+                      className={`btn-3d btn-3d-green font-black text-xs sm:text-sm px-6 py-2.5 rounded-2xl flex items-center gap-2 tracking-wider cursor-pointer ${
+                        isSubmittingAuction ? 'opacity-60 cursor-not-allowed' : ''
+                      }`}
+                      id="btn-submit-relay-auction"
+                    >
+                      <span className="text-sm">{isSubmittingAuction ? '⏳' : '▶'}</span>
+                      <span>
+                        {isSubmittingAuction
+                          ? `DISPATCHING (${auctionProgress?.current}/${auctionProgress?.total}): ${auctionProgress?.currentBuilder || 'Auditing'}...`
+                          : `SUBMIT RELAY AUCTION (${builderBids.length} BIDS)`}
+                      </span>
+                    </button>
+
+                    {auctionResult && (
+                      <span className="text-xs font-mono font-black text-[#235839] bg-[#DEF4E6] px-3.5 py-2 rounded-xl border border-[#7DD89F] shadow-sm animate-in fade-in">
+                        ✓ Slot {auctionResult.slot} Resolved at {auctionResult.submittedAt}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] font-mono font-bold text-[#8F4C30] flex items-center gap-1.5 bg-[#FFF2DE] px-3 py-1.5 rounded-xl border border-[#ECD0B3]">
+                    <span>⚡</span>
+                    <span>400ms stagger between bid dispatches → Async relay compliance evaluation</span>
+                  </div>
+                </div>
+
+                {/* ========================================================= */}
+                {/* LIVE AUCTION RESOLUTION RESULT AREA                       */}
+                {/* ========================================================= */}
+                {auctionResult && (
+                  <div className="mt-2 space-y-4 pt-4 border-t-2 border-[#ECD0B3] animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-black text-[#5C2B1A] uppercase tracking-wider">
+                          Auction Resolution Live Board
+                        </span>
+                        <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-[#ECD0B3] text-[#692E19]">
+                          Slot #{auctionResult.slot}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAuctionResult(null)}
+                        className="text-[11px] font-bold text-[#8F4C30] hover:text-[#5C2B1A] underline cursor-pointer"
+                      >
+                        Clear Auction Board
+                      </button>
+                    </div>
+
+                    {/* Spotlight Card: Winning Header OR Fail-Closed Banner */}
+                    {auctionResult.winningHeader ? (
+                      <div className="tactile-card bg-[#E5F7EB] border-[3px] border-[#48BB78] rounded-2xl p-4 md:p-5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+                        <div className="flex items-center gap-3.5">
+                          <div className="w-12 h-12 rounded-2xl bg-[#48BB78] text-white flex items-center justify-center text-2xl shadow-sm">
+                            🥇
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black uppercase tracking-wider text-[#1D5E38]">
+                                WINNING COMPLIANT BLOCK HEADER
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md bg-white border border-[#48BB78] text-[#1D5E38] font-mono text-xs font-black">
+                                Slot {auctionResult.slot}
+                              </span>
+                            </div>
+                            <div className="text-lg md:text-xl font-black text-[#154629] font-mono mt-0.5">
+                              {auctionResult.winningHeader.builder_id}
+                            </div>
+                            <div className="text-xs text-[#286C45] font-mono">
+                              Block: {auctionResult.winningHeader.block_hash.slice(0, 22)}... | Fee Recipient:{' '}
+                              {shortAddr(auctionResult.winningHeader.fee_recipient)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <div className="text-xs uppercase font-bold text-[#1D5E38]">Validated MEV Bid Value</div>
+                          <div className="text-2xl md:text-3xl font-black font-mono text-[#154629]">
+                            {(Number(auctionResult.winningHeader.value_wei) / 1e18).toFixed(4)} ETH
+                          </div>
+                          <div className="text-[11px] text-[#286C45] font-bold">
+                            ✓ Cryptographically Proven Sanction-Free
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="tactile-card bg-[#FDE8E8] border-[3px] border-[#E53E3E] rounded-2xl p-4 md:p-5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+                        <div className="flex items-center gap-3.5">
+                          <div className="w-12 h-12 rounded-2xl bg-[#E53E3E] text-white flex items-center justify-center text-2xl shadow-sm">
+                            🛑
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black uppercase tracking-wider text-[#9B2C2C]">
+                                FAIL-CLOSED: RELAY REFUSED TO PROPOSE
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md bg-white border border-[#E53E3E] text-[#9B2C2C] font-mono text-xs font-black">
+                                Slot {auctionResult.slot}
+                              </span>
+                            </div>
+                            <div className="text-base md:text-lg font-black text-[#781B1B] mt-0.5">
+                              No Compliant Block Header Selected
+                            </div>
+                            <div className="text-xs text-[#9B2C2C] font-semibold mt-0.5">
+                              All submitted candidate bids were disqualified under compliance policy. The relay strictly fails closed rather than proposing a tainted header.
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <div className="text-xs uppercase font-bold text-[#9B2C2C]">Auction Status</div>
+                          <div className="text-xl md:text-2xl font-black font-mono text-[#781B1B]">
+                            0 / {auctionResult.bids.length} COMPLIANT
+                          </div>
+                          <div className="text-[11px] text-[#9B2C2C] font-bold">
+                            ⛔ Zero Taint Tolerance Enforced
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Bids Table with Winner Trophy and Disqualified Strikethroughs */}
+                    <div className="border-2 border-[#8F4C30] rounded-2xl overflow-hidden bg-white shadow-inner">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs sm:text-sm font-mono">
+                          <thead className="bg-[#F8ECE0] text-[#7A3F29] uppercase font-black text-[11px] tracking-wider border-b-2 border-[#8F4C30]">
+                            <tr>
+                              <th className="py-3 px-4">Builder Label</th>
+                              <th className="py-3 px-4">Bid Value</th>
+                              <th className="py-3 px-4">Compliance Verdict</th>
+                              <th className="py-3 px-4">Reason Codes &amp; Disqualification Proof</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#F1DEC9]">
+                            {auctionResult.bids.map((bid, bIdx) => {
+                              const isWinner =
+                                auctionResult.winningHeader?.builder_id === bid.builder_id &&
+                                bid.verdict === 'COMPLIANT';
+                              const isTainted =
+                                bid.verdict === 'EXPOSED_TX' ||
+                                bid.verdict === 'EXPOSED_BUILDER' ||
+                                bid.verdict === 'REJECTED';
+                              const ethVal = (Number(bid.value_wei) / 1e18).toFixed(4);
+
+                              return (
+                                <tr
+                                  key={bid.id || bIdx}
+                                  className={`transition-colors ${
+                                    isWinner
+                                      ? 'bg-[#E5F7EB]/70 font-semibold'
+                                      : isTainted
+                                      ? 'bg-red-50/60'
+                                      : 'hover:bg-[#FFF9F2]'
+                                  }`}
+                                >
+                                  {/* Builder Label */}
+                                  <td className="py-3.5 px-4 font-bold align-top">
+                                    <div className="flex items-center gap-2">
+                                      {isWinner && <span className="text-sm">🏆</span>}
+                                      {isTainted && <span className="text-sm">⛔</span>}
+                                      <span
+                                        className={`${
+                                          isWinner
+                                            ? 'text-[#1D5E38] font-black'
+                                            : isTainted
+                                            ? 'line-through text-red-600 font-semibold'
+                                            : 'text-[#5C2B1A]'
+                                        }`}
+                                      >
+                                        {bid.builder_id}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-[#A06449] font-normal font-mono mt-0.5">
+                                      Fee Recipient: {shortAddr(bid.fee_recipient)}
+                                    </div>
+                                  </td>
+
+                                  {/* Bid Value */}
+                                  <td className="py-3.5 px-4 font-black align-top">
+                                    <span
+                                      className={`text-sm ${
+                                        isWinner
+                                          ? 'text-[#1D5E38]'
+                                          : isTainted
+                                          ? 'line-through text-red-600'
+                                          : 'text-[#5C2B1A]'
+                                      }`}
+                                    >
+                                      {ethVal} ETH
+                                    </span>
+                                  </td>
+
+                                  {/* Compliance Verdict Badge */}
+                                  <td className="py-3.5 px-4 align-top">
+                                    <span
+                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase ${
+                                        isWinner
+                                          ? 'bg-[#DEF4E6] text-[#235839] border border-[#7DD89F]'
+                                          : bid.verdict === 'EXPOSED_BUILDER'
+                                          ? 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                                          : bid.verdict === 'EXPOSED_TX'
+                                          ? 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                                          : bid.verdict === 'REJECTED'
+                                          ? 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                                          : 'bg-[#FEF6E4] text-[#8C5D17] border border-[#F6CB63]'
+                                      }`}
+                                    >
+                                      {isWinner ? 'WINNER (COMPLIANT)' : bid.verdict}
+                                    </span>
+                                  </td>
+
+                                  {/* Disqualification Reasons & Proofs */}
+                                  <td className="py-3.5 px-4 align-top text-xs">
+                                    {isWinner ? (
+                                      <span className="text-[#1D5E38] font-bold flex items-center gap-1.5">
+                                        <span>✓</span>
+                                        <span>Cryptographically compliant — Highest valid MEV bid chosen</span>
+                                      </span>
+                                    ) : bid.error ? (
+                                      <div className="text-red-700 font-bold bg-red-100 p-1.5 rounded text-[11px]">
+                                        Submission Error: {bid.error}
+                                      </div>
+                                    ) : bid.reasons && bid.reasons.length > 0 ? (
+                                      <div className="space-y-1">
+                                        {bid.reasons.map((reason, rIdx) => (
+                                          <div
+                                            key={rIdx}
+                                            className="text-red-700 font-bold bg-red-100/80 p-1.5 rounded text-[11px] border border-red-200"
+                                          >
+                                            {reason}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <span className="text-[#8F4C30] italic text-xs">
+                                        Disqualified under active compliance policy
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </section>
