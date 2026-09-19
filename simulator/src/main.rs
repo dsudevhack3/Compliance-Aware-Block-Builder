@@ -208,17 +208,23 @@ const FORK_COUNTER_CONTRACT_ADDRESS: &str = "0x50cf1849e32E6A17bBFF6B1Aa8b1F7B47
 async fn main() -> eyre::Result<()> {
     dotenvy::dotenv().ok();
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://localhost:5432/compliance_builder".to_string()
+        let user = std::env::var("USER").unwrap_or_else(|_| "postgres".to_string());
+        format!("postgres://{}@localhost:5432/compliance_builder", user)
     });
-    if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
-        let _ = sqlx::query("DELETE FROM compliance_decisions WHERE tx_hash LIKE '0xsim%' OR tx_hash LIKE '0xstress%' OR tx_hash LIKE '0xtest%'")
+    match sqlx::PgPool::connect(&database_url).await {
+        Ok(pool) => {
+            let _ = sqlx::query("DELETE FROM compliance_decisions WHERE tx_hash LIKE '0xsim%' OR tx_hash LIKE '0xstress%' OR tx_hash LIKE '0xtest%'")
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query(
+                "UPDATE compliance_policies SET is_active = (policy_id = 'institution-standard-v1')",
+            )
             .execute(&pool)
             .await;
-        let _ = sqlx::query(
-            "UPDATE compliance_policies SET is_active = (policy_id = 'institution-standard-v1')",
-        )
-        .execute(&pool)
-        .await;
+        }
+        Err(e) => {
+            eprintln!("[Warning] Database cleanup skipped: {:?}", e);
+        }
     }
 
     let anvil_rpc =
@@ -489,13 +495,14 @@ async fn main() -> eyre::Result<()> {
     println!("  [FORK STATE VERIFIED] Historical Mainnet Nonce: {} txs", lazarus_nonce);
     println!("  [FORK STATE VERIFIED] Historical Balance at Fork Block: {} wei", lazarus_balance);
 
+    let neutral_recipient = "0x8888888888888888888888888888888888888888";
     let fake_tx_hash_7b = "0xsim007b_real_ofac_lazarus";
     let decision7b = screen_transaction(
         &http_client,
         &engine_url,
         fake_tx_hash_7b,
         &format!("{:?}", real_lazarus_eoa),
-        &format!("{:?}", recipient),
+        neutral_recipient,
     )
     .await?;
 
