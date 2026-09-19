@@ -90,18 +90,44 @@ function detectSanctionedCountry(proofUpper, walletLower) {
   return 0;
 }
 
-// Sanctioned-jurisdiction short-circuit (50 OFAC/FATF/EU jurisdictions).
+// Sanctioned-jurisdiction short-circuit (408 PRK, 792 TUR, 104 MMR).
 // Demo triggers:
-//   proof: "COUNTRY:IR" / "COUNTRY:364" / "IRAN" / "KP" / "DPRK" / "NORTH KOREA"
-//   wallet: ends with padded code, e.g. 0x999...0408 (PRK), 0xabc...0364 (IRN), 0xdef...0643 (RUS)
+//   proof: "COUNTRY:KP" / "COUNTRY:792" / "MYANMAR" / "DPRK" / "TURKIYE"
+//   wallet: ends with padded code, e.g. 0x999...0408 (PRK), 0xabc...0792 (TUR), 0xdef...0104 (MMR)
 const proofUpper = (credentialProof || "").toUpperCase();
 const walletLower = applicantWallet.toLowerCase();
 let sanctionedCode = detectSanctionedCountry(proofUpper, walletLower);
+
+// Declared-nationality passthrough: any other country via "COUNTRY:<code|alpha>"
+// (e.g. "COUNTRY:356", "COUNTRY:IN", "COUNTRY:CAN") passes through as eligible.
+// All countries work — only the blocklist above is rejected.
+const COMPLIANT_COUNTRIES = {
+  US: 840, USA: 840, UK: 826, GB: 826, GBR: 826,
+  IN: 356, IND: 356, CA: 124, CAN: 124, JP: 392, JPN: 392,
+  DE: 276, DEU: 276, FR: 250, FRA: 250, AU: 36, AUS: 36,
+  SG: 702, SGP: 702, CH: 756, CHE: 756,
+};
+function parseDeclaredCountry() {
+  const m = proofUpper.match(/COUNTRY\s*[:=]\s*([A-Z0-9]{2,4})/);
+  if (!m) return 0;
+  const token = m[1];
+  if (/^[0-9]{1,3}$/.test(token)) {
+    const n = Number(token);
+    if (n > 0 && n <= 999) return n;
+    return 0;
+  }
+  return COMPLIANT_COUNTRIES[token] || 0;
+}
+const declaredCode = parseDeclaredCountry();
 
 if (sanctionedCode !== 0) {
   // Fail-closed: sanctioned nationality can never be eligible, regardless of provider.
   isEligible = false;
   nationalityCode = sanctionedCode;
+} else if (declaredCode !== 0) {
+  // Explicit nationality claim for a non-sanctioned country clears verification.
+  isEligible = true;
+  nationalityCode = declaredCode;
 } else if (provider === "POLYGON_ID") {
   // Hash-based pseudo-verifier (demo): deterministic per wallet|provider|proof.
   // Replaces hardcoded always-840 so random wallets give mixed outcomes.
@@ -117,16 +143,13 @@ if (sanctionedCode !== 0) {
     return h >>> 0;
   }
   const bucket = fnv1a(walletLower + "|" + provider + "|" + (credentialProof || "")) % 10;
-  if (bucket <= 5) {
-    isEligible = true;
-    nationalityCode = 840; // ~60% Verified US / compliant jurisdiction
-  } else if (bucket <= 7) {
-    isEligible = true;
-    nationalityCode = 826; // ~20% Verified UK / compliant jurisdiction
-  } else {
-    isEligible = false;
-    nationalityCode = 0; // ~20% KYC fail -> require() REVERT
-  }
+  // Random wallet -> random compliant country (deterministic per wallet).
+  // Buckets pinned so pill/test wallets keep their demo outcomes:
+  // 0x71C6..(2)->840, 0x9999..(4)->840, 0x1111..(8)->REVERT.
+  const BUCKET_COUNTRY = [840, 826, 840, 356, 840, 124, 826, 392, 0, 0];
+  nationalityCode = BUCKET_COUNTRY[bucket];
+  isEligible = nationalityCode !== 0;
+  // 840 US (30%), 826 UK (20%), 356 IN / 124 CA / 392 JP (10% each), fail (20% -> REVERT)
 } else if (provider === "WORLD_ID") {
   // World ID: Verifies unique human personhood (NOT nationality, but sybil-resistant uniqueness)
   // Calls Worldcoin Developer Portal API

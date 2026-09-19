@@ -1218,12 +1218,36 @@ fastify.post('/api/compliance/identity/verify', async (request, reply) => {
     }
     const sanctionedCode = detectSanctionedCountry();
 
+    // Declared-nationality passthrough: any other country via "COUNTRY:<code|alpha>"
+    // passes through as eligible. All countries work — only the blocklist is rejected.
+    const COMPLIANT_COUNTRIES: Record<string, number> = {
+        US: 840, USA: 840, UK: 826, GB: 826, GBR: 826,
+        IN: 356, IND: 356, CA: 124, CAN: 124, JP: 392, JPN: 392,
+        DE: 276, DEU: 276, FR: 250, FRA: 250, AU: 36, AUS: 36,
+        SG: 702, SGP: 702, CH: 756, CHE: 756,
+    };
+    function parseDeclaredCountry(): number {
+        const dm = proofUpper.match(/COUNTRY\s*[:=]\s*([A-Z0-9]{2,4})/);
+        if (!dm) return 0;
+        const token = dm[1];
+        if (/^[0-9]{1,3}$/.test(token)) {
+            const n = Number(token);
+            if (n > 0 && n <= 999) return n;
+            return 0;
+        }
+        return COMPLIANT_COUNTRIES[token] || 0;
+    }
+    const declaredCode = parseDeclaredCountry();
+
     if (sanctionedCode !== 0 && BLOCKED.has(sanctionedCode)) {
         isEligible = false;
         nationalityCode = sanctionedCode;
+    } else if (declaredCode !== 0) {
+        isEligible = true;
+        nationalityCode = declaredCode;
     } else if (provider === 'POLYGON_ID') {
         // Hash-based pseudo-verifier (demo) — mirrors verifyIdentity.js DON logic.
-        // Deterministic per wallet|provider|proof: ~60% 840/true, ~20% 826/true, ~20% 0/false.
+        // Random wallet -> random compliant country, deterministic per wallet|provider|proof.
         function fnv1a(str: string): number {
             let h = 0x811c9dc5;
             for (let i = 0; i < str.length; i++) {
@@ -1234,16 +1258,10 @@ fastify.post('/api/compliance/identity/verify', async (request, reply) => {
         }
         const bucket =
             fnv1a(`${walletLower}|${provider}|${body.credentialProof || ''}`) % 10;
-        if (bucket <= 5) {
-            isEligible = true;
-            nationalityCode = 840;
-        } else if (bucket <= 7) {
-            isEligible = true;
-            nationalityCode = 826;
-        } else {
-            isEligible = false;
-            nationalityCode = 0;
-        }
+        // Buckets pinned so pill wallets keep demo outcomes (0x71C6->840, 0x9999->840, 0x1111->REVERT)
+        const BUCKET_COUNTRY = [840, 826, 840, 356, 840, 124, 826, 392, 0, 0];
+        nationalityCode = BUCKET_COUNTRY[bucket];
+        isEligible = nationalityCode !== 0;
     } else if (provider === 'WORLD_ID') {
         // Require non-trivial nullifier hash for World ID personhood proof
         isEligible = Boolean(body.credentialProof && body.credentialProof.trim().length >= 10);
