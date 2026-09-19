@@ -1151,11 +1151,9 @@ fastify.get('/api/compliance/identity/:address', async (request, reply) => {
 });
 
 fastify.post('/api/compliance/identity/verify', async (request, reply) => {
-    // Enforce admin or authorized compliance officer authentication
-    if (!verifyAdminAuth(request)) {
-        reply.status(401);
-        return { error: 'Unauthorized: Admin authentication header (x-admin-key or Bearer) required' };
-    }
+    // Public demo endpoint (no admin key — the dashboard calls it directly).
+    // Abuse is bounded by the sliding-window rate limit below.
+    // (Revocation via /api/compliance/identity/revoke stays admin-only.)
 
     // Sliding-window rate limit
     const clientIp = request.ip || 'identity-verify-client';
