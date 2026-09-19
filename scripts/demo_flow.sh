@@ -7,11 +7,19 @@ echo "==========================================================================
 
 API_URL="${API_URL:-http://127.0.0.1:3002}"
 RELAY_URL="${RELAY_URL:-http://127.0.0.1:3003}"
+ANVIL_URL="${ANVIL_RPC:-http://127.0.0.1:8545}"
 ENGINE_URL="${ENGINE_URL:-http://127.0.0.1:3001}"
 ADMIN_KEY="${ADMIN_API_KEY:-dev-admin-secret-2026}"
 
 echo ""
 echo "[Step 1/5] Verifying Core Services Health..."
+BLOCK_HEX=$(curl -s -X POST "${ANVIL_URL}" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' | grep -o '"result":"[^"]*' | cut -d'"' -f4 || true)
+if [ -n "${BLOCK_HEX}" ]; then
+  BLOCK_DEC=$((16#${BLOCK_HEX#0x}))
+  echo "  ✓ Anvil Node (Port 8545): OK (Block #${BLOCK_DEC})"
+else
+  echo "  ⚠ Anvil not responding on ${ANVIL_URL}"
+fi
 curl -s "${ENGINE_URL}/health" | grep -q "healthy" && echo "  ✓ Engine (Port 3001): OK" || echo "  ⚠ Engine not healthy"
 curl -s "${RELAY_URL}/health" | grep -q "healthy" && echo "  ✓ Relay (Port 3003): OK" || echo "  ⚠ Relay not healthy"
 curl -s "${API_URL}/health" | grep -q "connected" && echo "  ✓ API (Port 3002): OK" || echo "  ⚠ API not healthy"

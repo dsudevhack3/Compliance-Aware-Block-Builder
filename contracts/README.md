@@ -39,10 +39,11 @@ $ forge fmt
 $ forge snapshot
 ```
 
-### Anvil
+### Anvil (Mainnet Fork Mode)
 
 ```shell
-$ anvil
+# Fork Ethereum Mainnet at pinned finalized block 21000000
+anvil --fork-url "${MAINNET_FORK_RPC_URL:-https://eth.drpc.org}" --fork-block-number 21000000
 ```
 
 ### Deploy
