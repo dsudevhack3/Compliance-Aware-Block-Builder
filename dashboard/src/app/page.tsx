@@ -582,144 +582,43 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             {/* Left: Main Title Badge */}
             <div className="flex items-center gap-3.5 md:gap-4">
-              <div className="w-12 h-12 md:w-14 md:h-14 bg-[#FFC570] border-3 border-[#8F4C30] rounded-2xl flex items-center justify-center text-2xl md:text-3xl shadow-[0_3px_0_#8F4C30] bobble-anim shrink-0">
-                🎾
+              <div className="w-12 h-12 md:w-14 md:h-14 bg-[#FFC570] border-3 border-[#8F4C30] rounded-2xl flex items-center justify-center text-2xl md:text-3xl shadow-[0_3px_0_#8F4C30] shrink-0">
+                🛡️
               </div>
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-wider text-[#6B2F1B]">
-                    COMPLIANCE ARCADE
+                    COMPLIANCE-AWARE BLOCK BUILDER
                   </h1>
                   <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-[#E5F7EB] border-2 border-[#48BB78] text-[#22543D] text-xs font-bold shadow-sm">
                     <span className="w-2 h-2 rounded-full bg-[#48BB78] ping-slow" />
-                    LIVE ARENA
+                    LIVE PRODUCTION GATE
                   </span>
                 </div>
                 <p className="text-xs md:text-sm font-semibold text-[#9C5D41] flex items-center gap-2 mt-0.5 flex-wrap">
                   <span>Deterministic Rust Pre-Execution Gate</span>
                   <span className="w-1.5 h-1.5 rounded-full bg-[#C88E75]" />
-                  <span className="font-mono text-xs">VASP Attribution &amp; Fraud Identification</span>
+                  <span className="font-mono text-xs">VASP Attribution &bull; OFAC SDN Clearance &bull; Chainlink Functions</span>
                 </p>
               </div>
             </div>
 
-            {/* Center: Animated Mascot Cats Rally Widget (Clickable link to /arcade) */}
-            <Link
-              href="/arcade"
-              className="flex items-center justify-center px-3 py-1.5 bg-[#FFF8EE] rounded-2xl border-2 border-[#8F4C30] shadow-sm select-none relative overflow-hidden group hover:scale-[1.05] active:scale-95 transition-all duration-300 cursor-pointer"
-              title="Play Interactive Compliance Arcade Game"
-            >
-              <svg
-                className="w-[158px] h-[54px] overflow-visible"
-                fill="none"
-                viewBox="0 0 160 54"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <ellipse cx="80" cy="49" fill="#E8CFB0" opacity="0.6" rx="74" ry="4" />
-                <g id="mini-court-net">
-                  <line stroke="#8F4C30" strokeLinecap="round" strokeWidth="2.2" x1="80" x2="80" y1="26" y2="50" />
-                  <line stroke="#FFF8F6" strokeLinecap="round" strokeWidth="1.8" x1="74" x2="86" y1="32" y2="32" />
-                  <line stroke="#FFF8F6" strokeDasharray="2 2" strokeWidth="1.5" x1="74" x2="86" y1="38" y2="38" />
-                  <circle cx="80" cy="25" fill="#E0835d" r="2.5" stroke="#8F4C30" strokeWidth="1.2" />
-                </g>
-
-                {/* LEFT CAT */}
-                <g id="left-ginger-cat" style={{ transformOrigin: '20px 48px', animation: 'catBobLeft 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite' }}>
-                  <ellipse cx="21" cy="50" fill="#6B341E" opacity="0.2" rx="14" ry="3" />
-                  <g style={{ transformOrigin: '9px 42px', animation: 'tailWagLeft 1.2s ease-in-out infinite' }}>
-                    <path d="M10 42 C 4 41, 1 33, 4 28 C 6 25, 9 27, 8 31 C 7 35, 10 38, 12 39" fill="none" stroke="#E0835D" strokeLinecap="round" strokeWidth="4.2" />
-                    <path d="M10 42 C 4 41, 1 33, 4 28 C 6 25, 9 27, 8 31 C 7 35, 10 38, 12 39" fill="none" stroke="#7D4427" strokeLinecap="round" strokeWidth="1" />
-                  </g>
-                  <ellipse cx="21" cy="37" fill="#E0835D" rx="11.5" ry="12" stroke="#7D4427" strokeWidth="1.8" />
-                  <ellipse cx="22" cy="38" fill="#FFF1EB" rx="7" ry="8" />
-                  <path d="M12 34 Q 15 35 13 38" stroke="#954827" strokeLinecap="round" strokeWidth="1.4" />
-                  <path d="M11 29 Q 15 30 13 33" stroke="#954827" strokeLinecap="round" strokeWidth="1.4" />
-                  <g style={{ transformOrigin: '21px 22px', animation: 'earTwitch 3.8s ease-in-out infinite' }}>
-                    <path d="M12 21 L16 12 L20 20 Z" fill="#E0835D" stroke="#7D4427" strokeLinejoin="round" strokeWidth="1.6" />
-                    <path d="M14 19 L16 14 L18 19 Z" fill="#FFC2B0" />
-                    <path d="M22 20 L26 12 L30 21 Z" fill="#E0835D" stroke="#7D4427" strokeLinejoin="round" strokeWidth="1.6" />
-                    <path d="M24 19 L26 14 L28 19 Z" fill="#FFC2B0" />
-                  </g>
-                  <circle cx="21" cy="24" fill="#E0835D" r="9.5" stroke="#7D4427" strokeWidth="1.8" />
-                  <circle cx="18" cy="23.5" fill="#452A1C" r="1.4" />
-                  <circle cx="24" cy="23.5" fill="#452A1C" r="1.4" />
-                  <ellipse cx="15.5" cy="26" fill="#F99B83" opacity="0.8" rx="1.8" ry="1" />
-                  <ellipse cx="26.5" cy="26" fill="#F99B83" opacity="0.8" rx="1.8" ry="1" />
-                  <path d="M20.5 25 L21.5 25 L21 26 Z" fill="#7D4427" />
-                  <path d="M19.5 27 Q 21 28 22.5 27" fill="none" stroke="#7D4427" strokeLinecap="round" strokeWidth="1" />
-                  <g style={{ transformOrigin: '26px 36px', animation: 'catSwingLeft 2.4s cubic-bezier(0.3, 0.7, 0.4, 1.2) infinite' }}>
-                    <path d="M24 36 Q 30 35 34 32" stroke="#E0835D" strokeLinecap="round" strokeWidth="3.8" />
-                    <path d="M33 32 L40 28" stroke="#954827" strokeLinecap="round" strokeWidth="2.2" />
-                    <ellipse cx="44" cy="25" fill="rgba(255,255,255,0.25)" rx="6" ry="8" stroke="#954827" strokeWidth="1.8" transform="rotate(35 44 25)" />
-                    <line stroke="#C88E75" strokeWidth="0.8" x1="41" x2="47" y1="20" y2="30" />
-                    <line stroke="#C88E75" strokeWidth="0.8" x1="47" x2="41" y1="20" y2="30" />
-                  </g>
-                </g>
-
-                {/* RIGHT CAT */}
-                <g id="right-cream-cat" style={{ transformOrigin: '139px 48px', animation: 'catBobRight 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite' }}>
-                  <ellipse cx="139" cy="50" fill="#6B341E" opacity="0.2" rx="14" ry="3" />
-                  <g style={{ transformOrigin: '151px 42px', animation: 'tailWagRight 1.3s ease-in-out infinite' }}>
-                    <path d="M150 42 C 156 41, 159 33, 156 28 C 154 25, 151 27, 152 31 C 153 35, 150 38, 148 39" fill="none" stroke="#7D4427" strokeLinecap="round" strokeWidth="4" />
-                  </g>
-                  <ellipse cx="139" cy="37" fill="#FFF1EB" rx="11.5" ry="12" stroke="#7D4427" strokeWidth="1.8" />
-                  <path d="M144 28 Q 150 34 146 43 Q 138 41 140 33 Z" fill="#E0835D" />
-                  <g style={{ transformOrigin: '139px 22px', animation: 'earTwitch 3.4s ease-in-out infinite 0.5s' }}>
-                    <path d="M130 21 L134 12 L138 20 Z" fill="#FFF1EB" stroke="#7D4427" strokeLinejoin="round" strokeWidth="1.6" />
-                    <path d="M132 19 L134 14 L136 19 Z" fill="#FFC2B0" />
-                    <path d="M140 20 L144 12 L148 21 Z" fill="#E0835D" stroke="#7D4427" strokeLinejoin="round" strokeWidth="1.6" />
-                    <path d="M142 19 L144 14 L146 19 Z" fill="#FFC2B0" />
-                  </g>
-                  <circle cx="139" cy="24" fill="#FFF1EB" r="9.5" stroke="#7D4427" strokeWidth="1.8" />
-                  <circle cx="135" cy="23.5" fill="#452A1C" r="1.4" />
-                  <circle cx="142" cy="23.5" fill="#452A1C" r="1.4" />
-                  <ellipse cx="132.5" cy="26" fill="#F99B83" opacity="0.8" rx="1.8" ry="1" />
-                  <ellipse cx="145.5" cy="26" fill="#F99B83" opacity="0.8" rx="1.8" ry="1" />
-                  <path d="M138.5 25 L139.5 25 L139 26 Z" fill="#7D4427" />
-                  <path d="M137.5 27 Q 139 28 140.5 27" fill="none" stroke="#7D4427" strokeLinecap="round" strokeWidth="1" />
-                  <g style={{ transformOrigin: '134px 36px', animation: 'catSwingRight 2.4s cubic-bezier(0.3, 0.7, 0.4, 1.2) infinite' }}>
-                    <path d="M135 36 Q 129 35 125 32" stroke="#FFF1EB" strokeLinecap="round" strokeWidth="3.8" />
-                    <path d="M126 32 L119 28" stroke="#954827" strokeLinecap="round" strokeWidth="2.2" />
-                    <ellipse cx="115" cy="25" fill="rgba(255,255,255,0.25)" rx="6" ry="8" stroke="#954827" strokeWidth="1.8" transform="rotate(-35 115 25)" />
-                    <line stroke="#C88E75" strokeWidth="0.8" x1="41" x2="47" y1="20" y2="30" />
-                    <line stroke="#C88E75" strokeWidth="0.8" x1="47" x2="41" y1="20" y2="30" />
-                  </g>
-                </g>
-
-                {/* SPARKLES & BALL */}
-                <g id="left-sparkle" style={{ animation: 'hitSparkLeft 2.4s infinite' }}>
-                  <path d="M0 -5 L1.5 -1.5 L5 0 L1.5 1.5 L0 5 L-1.5 1.5 L-5 0 L-1.5 -1.5 Z" fill="#F6BE3D" />
-                </g>
-                <g id="right-sparkle" style={{ animation: 'hitSparkRight 2.4s infinite' }}>
-                  <path d="M0 -5 L1.5 -1.5 L5 0 L1.5 1.5 L0 5 L-1.5 1.5 L-5 0 L-1.5 -1.5 Z" fill="#F6BE3D" />
-                </g>
-                <g id="rally-tennis-ball" style={{ animation: 'ballRallyLoop 2.4s cubic-bezier(0.35, 0.15, 0.35, 0.95) infinite' }}>
-                  <circle cx="0" cy="0" fill="#D5F237" r="4.5" stroke="#6E7C10" strokeWidth="1" />
-                </g>
-              </svg>
-              <span className="absolute bottom-0.5 text-[8px] font-mono font-black text-[#8C5D19] tracking-widest uppercase opacity-75 pointer-events-none">
-                RALLY PAWS ↗
-              </span>
-            </Link>
-
-            {/* Capsules */}
+            {/* Right: Telemetry & Navigation Capsules */}
             <div className="flex flex-wrap items-center gap-2.5 ml-auto">
-              {/* Score */}
-              <button
-                onClick={() => setActiveTab('lineage')}
-                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#FFF2DF] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
-                title={`Audit Score: ${dynamicScore} PTS earned across ${totalDecisionsCount} screened transactions. Click to view lineage audit proofs.`}
+              {/* Arcade Link */}
+              <Link
+                href="/arcade"
+                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#FFEECF] rounded-2xl px-3.5 py-2 flex items-center gap-2 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left border-2 border-[#8F4C30]"
+                title="Open Arcade Mempool Visualizer"
               >
-                <div className="w-8 h-8 rounded-xl bg-[#F6BE3D] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm">
-                  ⭐
-                </div>
+                <span className="text-base">🎮</span>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">SCORE</div>
-                  <div className="text-base md:text-lg font-black font-mono text-[#6A2E19] leading-tight">
-                    {dynamicScore.toString().padStart(5, '0')} PTS
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">VISUALIZER</div>
+                  <div className="text-xs font-black font-mono text-[#6A2E19] leading-tight">
+                    ARCADE &rarr;
                   </div>
                 </div>
-              </button>
+              </Link>
 
               {/* Accuracy */}
               <button
@@ -740,26 +639,6 @@ export default function Dashboard() {
                     <span className="text-xs text-[#6B8574] font-medium">
                       ({allowDecisionsCount}/{totalDecisionsCount})
                     </span>
-                  </div>
-                </div>
-              </button>
-
-              {/* Streak */}
-              <button
-                onClick={() => {
-                  setStatusFilter('ALL');
-                  setActiveTab('mempool');
-                }}
-                className="tactile-card-sm bg-[#FFF8EE] hover:bg-[#FFF0EB] rounded-2xl px-3.5 py-2 flex items-center gap-2.5 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all text-left"
-                title={`Clean Streak: ${dynamicStreak} consecutive clean transactions without violation. Click to view all mempool transactions.`}
-              >
-                <div className="w-8 h-8 rounded-xl bg-[#F88164] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-sm">
-                  🔥
-                </div>
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#A06449]">STREAK</div>
-                  <div className="text-base md:text-lg font-black font-mono text-[#8C2E14] leading-tight">
-                    {dynamicStreak}x
                   </div>
                 </div>
               </button>
@@ -953,14 +832,14 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Serve Next Rally CTA Button */}
-          <Link
-            href="/arcade"
-            className="btn-3d btn-3d-green font-black text-sm sm:text-base px-6 py-3.5 rounded-2xl flex items-center gap-2.5 tracking-wider shadow-md hover:scale-[1.02] active:scale-95 transition-all text-white"
+          {/* Direct KYC Verification CTA Button */}
+          <button
+            onClick={() => setActiveTab('identity')}
+            className="btn-3d bg-[#9333EA] hover:bg-[#7E22CE] border-2 border-[#581C87] font-black text-sm sm:text-base px-6 py-3.5 rounded-2xl flex items-center gap-2.5 tracking-wider shadow-md hover:scale-[1.02] active:scale-95 transition-all text-white cursor-pointer"
           >
-            <span className="text-lg">🎾</span>
-            <span>SERVE NEXT RALLY</span>
-          </Link>
+            <span className="text-lg">🪪</span>
+            <span>VERIFY ON-CHAIN KYC</span>
+          </button>
         </section>
 
         {/* Section 4: Search Input Bar with Bold Yellow Plus Action */}
@@ -2031,24 +1910,42 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => {
+                    setIdentityApplicant('0x71C634C2447d5E0A41855985b6E633F530E780a2');
+                    setIdentityProvider('POLYGON_ID');
+                  }}
+                  className="px-2.5 py-1 bg-[#F5E8FF] border border-[#A855F7] text-[#6B21A8] hover:bg-[#E9D5FF] text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                >
+                  🟣 Polygon ID (US Citizen)
+                </button>
+                <button
+                  onClick={() => {
+                    setIdentityApplicant('0x4444444444444444444444444444444444444444');
+                    setIdentityProvider('WORLD_ID');
+                  }}
+                  className="px-2.5 py-1 bg-[#F0FDF4] border border-[#22C55E] text-[#15803D] hover:bg-[#DCFCE7] text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                >
+                  🌐 World ID (Iris Personhood)
+                </button>
                 <button
                   onClick={() => {
                     setIdentityApplicant('0x28c6c06298d514db089934071355e5743bf21d60');
                     setIdentityProvider('EXCHANGE_KYC');
                   }}
-                  className="px-2.5 py-1 bg-[#F5E8FF] border border-[#A855F7] text-[#6B21A8] hover:bg-[#E9D5FF] text-xs font-bold rounded-xl cursor-pointer"
+                  className="px-2.5 py-1 bg-[#EFF6FF] border border-[#3B82F6] text-[#1D4ED8] hover:bg-[#DBEAFE] text-xs font-bold rounded-xl cursor-pointer transition-colors"
                 >
-                  Load Regulated Exchange (Binance)
+                  🏦 Binance KYC (VASP)
                 </button>
                 <button
                   onClick={() => {
-                    setIdentityApplicant('0x9999999999999999999999999999999999999999');
+                    setIdentityApplicant('0x555555555555555555555555555555555555555b');
                     setIdentityProvider('POLYGON_ID');
                   }}
-                  className="px-2.5 py-1 bg-[#FFF1F2] border border-[#F43F5E] text-[#BE123C] hover:bg-[#FFE4E6] text-xs font-bold rounded-xl cursor-pointer"
+                  className="px-2.5 py-1 bg-[#FFF1F2] border border-[#F43F5E] text-[#BE123C] hover:bg-[#FFE4E6] text-xs font-bold rounded-xl cursor-pointer transition-colors"
                 >
-                  Load Unverified Applicant
+                  ⛔ Unverified (Reverts)
                 </button>
               </div>
             </div>
