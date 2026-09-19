@@ -15,6 +15,7 @@ import {
   Trophy,
   Shield,
   RefreshCw,
+  Info,
 } from 'lucide-react';
 import './arcade/arcade.css';
 
@@ -267,6 +268,7 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ALLOW' | 'FLAG' | 'BLOCK'>('ALL');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
+  const [optimisticPolicyId, setOptimisticPolicyId] = useState<string | null>(null);
   const [isSwitchingPolicy, setIsSwitchingPolicy] = useState(false);
   const [wsConnected, setWsConnected] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
@@ -363,6 +365,7 @@ export default function Dashboard() {
 
   async function switchPolicy(policyId: string) {
     setIsSwitchingPolicy(true);
+    setOptimisticPolicyId(policyId);
     try {
       const res = await fetch(`${API_URL}/api/policy/activate`, {
         method: 'POST',
@@ -374,12 +377,16 @@ export default function Dashboard() {
       });
       if (res.ok) {
         await fetchAll();
+        if (selectedSlot !== undefined) {
+          await reRunSlotAudit(selectedSlot);
+        }
       }
     } catch {
       // local toggle fallback
     } finally {
       setIsSwitchingPolicy(false);
       setIsPolicyModalOpen(false);
+      setOptimisticPolicyId(null);
     }
   }
 
@@ -475,7 +482,7 @@ export default function Dashboard() {
     String(decisions.filter((d) => d.decision === 'BLOCK').length || 53);
   const exposedBlocks = stats?.blocks?.find((b) => b.compliance_status === 'EXPOSED_EXTERNAL')?.count ??
     String(blocks.filter((b) => b.compliance_status === 'EXPOSED_EXTERNAL').length || 3);
-  const activePolicyId = stats?.active_policy?.policy_id || 'institution-standard-v1';
+  const activePolicyId = optimisticPolicyId || stats?.active_policy?.policy_id || 'institution-standard-v1';
 
   // Filtered decisions
   const filteredDecisions = useMemo(() => {
@@ -989,45 +996,7 @@ export default function Dashboard() {
           </button>
         </section>
 
-        {/* Policy Switcher Popover / Banner */}
-        {isPolicyModalOpen && (
-          <div className="p-4 rounded-3xl border-3 border-[#8F4C30] bg-[#FFF2DE] shadow-[4px_4px_0_#6B341E] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
-            <div>
-              <p className="font-black text-sm text-[#692E19] flex items-center gap-2">
-                <SlidersHorizontal className="size-4 text-[#8F4C30]" /> Policy: {policies.find((p) => p.policy_id === activePolicyId)?.name || 'Institutional Standard (2-Hop)'}
-              </p>
-              <p className="text-xs text-[#8F4C30] mt-0.5 font-bold">
-                Toggle deterministic Rust pre-execution rules between institutional 2-hop or lenient 1-hop traversal.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <button
-                onClick={() => switchPolicy('institution-standard-v1')}
-                disabled={isSwitchingPolicy}
-                className={`px-3 py-1.5 text-xs font-black rounded-xl border-2 border-[#8F4C30] transition-all cursor-pointer ${
-                  activePolicyId === 'institution-standard-v1' ? 'btn-3d btn-3d-primary text-white' : 'bg-white text-[#692E19]'
-                }`}
-              >
-                Standard (2-Hop)
-              </button>
-              <button
-                onClick={() => switchPolicy('institution-lenient-v1')}
-                disabled={isSwitchingPolicy}
-                className={`px-3 py-1.5 text-xs font-black rounded-xl border-2 border-[#8F4C30] transition-all cursor-pointer ${
-                  activePolicyId === 'institution-lenient-v1' ? 'btn-3d btn-3d-amber text-white' : 'bg-white text-[#692E19]'
-                }`}
-              >
-                Lenient (1-Hop)
-              </button>
-              <button
-                onClick={() => setIsPolicyModalOpen(false)}
-                className="p-1.5 rounded-xl border-2 border-[#8F4C30] bg-white hover:bg-neutral-100 text-[#692E19] cursor-pointer"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-          </div>
-        )}
+
 
         {/* Section 5: Compliance Telemetry Collections (6 Signature Tactile Cards) */}
         <section className="flex flex-col gap-3">
@@ -1784,10 +1753,11 @@ export default function Dashboard() {
 
                 <button
                   onClick={() => setIsPolicyModalOpen(true)}
-                  className="px-3.5 py-2 rounded-2xl font-black text-xs bg-[#FFF8EE] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all flex items-center gap-1.5 shadow-sm"
+                  className="px-3.5 py-2 rounded-2xl font-black text-xs bg-[#FFF8EE] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#FFF0DF] transition-all flex items-center gap-1.5 shadow-sm cursor-pointer hover:scale-[1.02] active:scale-95"
+                  title="Switch Active Compliance Policy"
                 >
-                  <SlidersHorizontal className="size-3.5" />
-                  <span>Switch Policy</span>
+                  <SlidersHorizontal className="size-3.5 text-[#8F4C30]" />
+                  <span>Switch Policy ({activePolicyId === 'institution-lenient-v1' ? 'Lenient' : 'Strict'})</span>
                 </button>
 
                 <button
@@ -2184,6 +2154,121 @@ export default function Dashboard() {
                     No EDD cases in queue.
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Global Policy Configuration Modal */}
+        {isPolicyModalOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsPolicyModalOpen(false);
+            }}
+          >
+            <div className="bg-[#FFFDF9] border-[3px] border-[#8F4C30] rounded-3xl shadow-[8px_8px_0_#6B341E] max-w-xl w-full p-5 sm:p-6 flex flex-col gap-4 sm:gap-5 animate-in zoom-in-95">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-3 border-b-2 border-[#ECD0B3]">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-[#F8B436] border-2 border-[#8F4C30] flex items-center justify-center text-xl shadow-[2px_2px_0_#6B341E]">
+                    ⚙️
+                  </div>
+                  <div>
+                    <h3 className="font-black text-base sm:text-lg text-[#5C2B1A]">Active Compliance Policy</h3>
+                    <p className="text-xs text-[#8F4C30] font-bold">
+                      Toggle deterministic Rust pre-execution rules across mempool and PBS auctions
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsPolicyModalOpen(false)}
+                  className="p-1.5 sm:p-2 rounded-xl border-2 border-[#8F4C30] bg-[#FFF2DE] hover:bg-[#FFE8CF] text-[#692E19] cursor-pointer transition-all hover:scale-105 active:scale-95"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+
+              {/* Policy Selection Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Standard Policy Card */}
+                <div
+                  onClick={() => switchPolicy('institution-standard-v1')}
+                  className={`p-4 rounded-2xl border-3 cursor-pointer transition-all flex flex-col justify-between gap-3 ${
+                    activePolicyId === 'institution-standard-v1'
+                      ? 'bg-[#EAF6ED] border-[#48BB78] shadow-[4px_4px_0_#2F855A]'
+                      : 'bg-white border-[#ECD0B3] hover:border-[#8F4C30] hover:bg-[#FFFDF9]'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-[#48BB78]/20 text-[#1D5E38] border border-[#48BB78]">
+                        STRICT 2-HOP
+                      </span>
+                      {activePolicyId === 'institution-standard-v1' && (
+                        <span className="text-xs font-black text-[#1D5E38] flex items-center gap-1">
+                          ✓ Active
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-black text-sm text-[#1D5E38]">Standard Institutional</h4>
+                    <p className="text-[11px] text-[#4A5568] mt-1.5 leading-relaxed">
+                      Recursive multi-hop graph walk. 2-hop indirect exposure flagged for human EDD review. $10k Travel Rule threshold.
+                    </p>
+                  </div>
+                  <button
+                    disabled={isSwitchingPolicy}
+                    className={`w-full py-2 rounded-xl text-xs font-black border-2 transition-all cursor-pointer ${
+                      activePolicyId === 'institution-standard-v1'
+                        ? 'btn-3d btn-3d-primary text-white border-[#1D5E38]'
+                        : 'bg-white border-[#8F4C30] text-[#692E19] hover:bg-[#FFF2DE]'
+                    }`}
+                  >
+                    {activePolicyId === 'institution-standard-v1' ? 'Currently Active' : 'Activate Strict (2-Hop)'}
+                  </button>
+                </div>
+
+                {/* Lenient Policy Card */}
+                <div
+                  onClick={() => switchPolicy('institution-lenient-v1')}
+                  className={`p-4 rounded-2xl border-3 cursor-pointer transition-all flex flex-col justify-between gap-3 ${
+                    activePolicyId === 'institution-lenient-v1'
+                      ? 'bg-[#FEF7EC] border-[#ED8936] shadow-[4px_4px_0_#C05621]'
+                      : 'bg-white border-[#ECD0B3] hover:border-[#8F4C30] hover:bg-[#FFFDF9]'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-[#ED8936]/20 text-[#9C4221] border border-[#ED8936]">
+                        LENIENT 1-HOP
+                      </span>
+                      {activePolicyId === 'institution-lenient-v1' && (
+                        <span className="text-xs font-black text-[#9C4221] flex items-center gap-1">
+                          ✓ Active
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-black text-sm text-[#7B341E]">Lenient Institutional</h4>
+                    <p className="text-[11px] text-[#4A5568] mt-1.5 leading-relaxed">
+                      1-hop direct counterparty check only. Relaxed thresholds (block: 85, flag: 60). $50k Travel Rule threshold.
+                    </p>
+                  </div>
+                  <button
+                    disabled={isSwitchingPolicy}
+                    className={`w-full py-2 rounded-xl text-xs font-black border-2 transition-all cursor-pointer ${
+                      activePolicyId === 'institution-lenient-v1'
+                        ? 'btn-3d btn-3d-amber text-white border-[#C05621]'
+                        : 'bg-white border-[#8F4C30] text-[#692E19] hover:bg-[#FFF2DE]'
+                    }`}
+                  >
+                    {activePolicyId === 'institution-lenient-v1' ? 'Currently Active' : 'Activate Lenient (1-Hop)'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Info Banner */}
+              <div className="p-3 bg-[#FFF2DE] border border-[#ECD0B3] rounded-xl flex items-center gap-2 text-xs text-[#8F4C30]">
+                <Info className="size-4 shrink-0 text-[#8F4C30]" />
+                <span>Policy activations propagate instantly across live screening and re-evaluate active PBS auction slots with zero downtime.</span>
               </div>
             </div>
           </div>
