@@ -205,6 +205,8 @@ pub struct ScreenRequest {
     pub value_usd: Option<f64>,
     #[serde(default)]
     pub vasp_metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub identity_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -493,6 +495,16 @@ pub async fn evaluate_transaction<P: ComplianceDataProvider + ?Sized>(
 
         Some(recipient_lower)
     };
+
+    // Evaluate on-chain identity credential eligibility
+    if let Some(true) = req.identity_verified {
+        reasons.push("ONCHAIN_IDENTITY_VERIFIED".to_string());
+    } else if let Some(false) = req.identity_verified {
+        reasons.push("UNVERIFIED_SENDER_REVERT_RISK".to_string());
+        if risk_score < policy.parameters.flag_threshold {
+            risk_score = policy.parameters.flag_threshold;
+        }
+    }
 
     // Evaluate final decision based on policy thresholds unless direct sanctions blocked
     if decision != "BLOCK" {
