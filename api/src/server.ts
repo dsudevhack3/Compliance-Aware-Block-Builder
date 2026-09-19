@@ -445,9 +445,13 @@ function findSimulatorBinary(): { binaryPath: string; simulatorDir: string } | n
         path.resolve(__dirname, '../simulator'),
     ];
     for (const dir of candidateDirs) {
-        const bin = path.join(dir, 'target/release/simulator');
-        if (fs.existsSync(bin)) {
-            return { binaryPath: bin, simulatorDir: dir };
+        const releaseBin = path.join(dir, 'target/release/simulator');
+        if (fs.existsSync(releaseBin)) {
+            return { binaryPath: releaseBin, simulatorDir: dir };
+        }
+        const debugBin = path.join(dir, 'target/debug/simulator');
+        if (fs.existsSync(debugBin)) {
+            return { binaryPath: debugBin, simulatorDir: dir };
         }
     }
     return null;
