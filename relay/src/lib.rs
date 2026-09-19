@@ -804,40 +804,40 @@ mod tests {
 
     #[test]
     fn test_block_wins_over_value() {
-        let mut bids = Vec::new();
-        // High-value bid with sanctions exposure: 10 ETH
-        bids.push(StoredBid {
-            bid_id: "bid-malicious".to_string(),
-            slot: 10,
-            block_hash: "0xhash1".to_string(),
-            builder_id: "builder-malicious".to_string(),
-            builder_pubkey: "0xpub1".to_string(),
-            fee_recipient: "0xfee1".to_string(),
-            value_wei: "10000000000000000000".to_string(),
-            value_wei_num: 10000000000000000000u128,
-            verdict: BidVerdict::ExposedTx,
-            reasons: vec!["Tx blocked: SANCTIONED_SENDER".to_string()],
-            tx_count: 5,
-            txs: vec![],
-            created_at: "".to_string(),
-        });
-
-        // Lower-value bid fully compliant: 2 ETH
-        bids.push(StoredBid {
-            bid_id: "bid-clean".to_string(),
-            slot: 10,
-            block_hash: "0xhash2".to_string(),
-            builder_id: "builder-clean".to_string(),
-            builder_pubkey: "0xpub2".to_string(),
-            fee_recipient: "0xfee2".to_string(),
-            value_wei: "2000000000000000000".to_string(),
-            value_wei_num: 2000000000000000000u128,
-            verdict: BidVerdict::Compliant,
-            reasons: vec![],
-            tx_count: 5,
-            txs: vec![],
-            created_at: "".to_string(),
-        });
+        let bids = vec![
+            // High-value bid with sanctions exposure: 10 ETH
+            StoredBid {
+                bid_id: "bid-malicious".to_string(),
+                slot: 10,
+                block_hash: "0xhash1".to_string(),
+                builder_id: "builder-malicious".to_string(),
+                builder_pubkey: "0xpub1".to_string(),
+                fee_recipient: "0xfee1".to_string(),
+                value_wei: "10000000000000000000".to_string(),
+                value_wei_num: 10000000000000000000u128,
+                verdict: BidVerdict::ExposedTx,
+                reasons: vec!["Tx blocked: SANCTIONED_SENDER".to_string()],
+                tx_count: 5,
+                txs: vec![],
+                created_at: "".to_string(),
+            },
+            // Lower-value bid fully compliant: 2 ETH
+            StoredBid {
+                bid_id: "bid-clean".to_string(),
+                slot: 10,
+                block_hash: "0xhash2".to_string(),
+                builder_id: "builder-clean".to_string(),
+                builder_pubkey: "0xpub2".to_string(),
+                fee_recipient: "0xfee2".to_string(),
+                value_wei: "2000000000000000000".to_string(),
+                value_wei_num: 2000000000000000000u128,
+                verdict: BidVerdict::Compliant,
+                reasons: vec![],
+                tx_count: 5,
+                txs: vec![],
+                created_at: "".to_string(),
+            },
+        ];
 
         let winner = select_best_compliant_header(&bids, 10).expect("should find compliant winner");
         assert_eq!(winner.builder_id, "builder-clean");
