@@ -10,6 +10,50 @@ const BLOCK_CAPACITY = 5;
 const TRAVEL_TO_GATE_MS = 1600;
 const TRAVEL_TO_ZONE_MS = 1600;
 
+// Stagger delay between sequential transaction screening submissions (ms)
+const SUBMISSION_STAGGER_MS = 400;
+const DEFAULT_ETH_VALUE_WEI = '1000000000000000000'; // 1 ETH in wei
+
+// Known-good seeded scenarios for ALLOW / FLAG / BLOCK demo
+const EXAMPLE_CLEAN_TX = {
+  sender: '0x1111111111111111111111111111111111111111',
+  recipient: '0x2222222222222222222222222222222222222222',
+  value: '1000000000000000000', // 1 ETH
+};
+
+// Seeded Tornado Cash 0.1 ETH Mixer (from db/seed_entities.sql)
+const EXAMPLE_MIXER_TX = {
+  sender: '0x1111111111111111111111111111111111111111',
+  recipient: '0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc',
+  value: '100000000000000000', // 0.1 ETH
+};
+
+// Seeded OFAC-Sanctioned Address (from db/seed_addresses.sql)
+const EXAMPLE_SANCTIONED_TX = {
+  sender: '0x1111111111111111111111111111111111111111',
+  recipient: '0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b',
+  value: '500000000000000000', // 0.5 ETH
+};
+
+type CustomTxRow = {
+  id: string;
+  sender: string;
+  recipient: string;
+  value: string;
+  tx_hash?: string;
+};
+
+type SubmissionResultItem = {
+  index: number;
+  tx_hash: string;
+  sender: string;
+  recipient: string;
+  decision?: 'ALLOW' | 'FLAG' | 'BLOCK';
+  risk_score?: number;
+  reasons?: string[];
+  error?: string;
+};
+
 type Decision = {
   tx_hash: string;
   sender: string;
@@ -197,6 +241,20 @@ export default function ArcadePage() {
   const [isSimulatorRunning, setIsSimulatorRunning] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [liveLatency, setLiveLatency] = useState('2.42 µs');
+
+  // Custom Transaction Submission Panel States
+  const [isCustomPanelOpen, setIsCustomPanelOpen] = useState(false);
+  const [customInputMode, setCustomInputMode] = useState<'form' | 'json'>('form');
+  const [formRows, setFormRows] = useState<CustomTxRow[]>([
+    { id: 'row_1', sender: '', recipient: '', value: DEFAULT_ETH_VALUE_WEI },
+  ]);
+  const [rawJson, setRawJson] = useState<string>('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [clientValidationError, setClientValidationError] = useState<string | null>(null);
+  const [isSubmittingCustom, setIsSubmittingCustom] = useState(false);
+  const [submissionProgress, setSubmissionProgress] = useState<{ current: number; total: number } | null>(null);
+  const [submissionSummary, setSubmissionSummary] = useState<string | null>(null);
+  const [submissionResults, setSubmissionResults] = useState<SubmissionResultItem[]>([]);
 
   // Tennis Racket & Hit feedback states
   const [racketSwingClass, setRacketSwingClass] = useState<string | null>(null);
@@ -842,6 +900,282 @@ export default function ArcadePage() {
     });
   }, [isSimulatorRunning, playRetroBleep, spawnSprite]);
 
+  // Generate random 64-char hex tx hash for custom demo submissions
+  const generateRandomTxHash = useCallback(() => {
+    const chars = '0123456789abcdef';
+    let hash = '0xcustom_';
+    for (let i = 0; i < 56; i++) {
+      hash += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return hash;
+  }, []);
+
+  // Validate Ethereum-style 0x address format
+  const isValidAddress = useCallback((addr: string) => {
+    const trimmed = addr.trim();
+    return /^0x[a-fA-F0-9]{40}$/.test(trimmed);
+  }, []);
+
+  // Load standard 3-transaction ALLOW / FLAG / BLOCK demo example
+  const loadExampleTransactions = useCallback(() => {
+    const examples: CustomTxRow[] = [
+      { id: `ex_clean_${Date.now()}`, ...EXAMPLE_CLEAN_TX },
+      { id: `ex_mixer_${Date.now() + 1}`, ...EXAMPLE_MIXER_TX },
+      { id: `ex_sanctioned_${Date.now() + 2}`, ...EXAMPLE_SANCTIONED_TX },
+    ];
+    setFormRows(examples);
+    setRawJson(
+      JSON.stringify(
+        examples.map(({ sender, recipient, value }) => ({ sender, recipient, value })),
+        null,
+        2
+      )
+    );
+    setJsonError(null);
+    setClientValidationError(null);
+    setSubmissionSummary(null);
+    setSubmissionResults([]);
+    playRetroBleep(587.33, 'triangle', 0.12);
+  }, [playRetroBleep]);
+
+  // Form row manipulation helpers
+  const addFormRow = useCallback(() => {
+    if (formRows.length >= 10) return;
+    setFormRows((prev) => [
+      ...prev,
+      { id: `row_${Date.now()}_${Math.random()}`, sender: '', recipient: '', value: DEFAULT_ETH_VALUE_WEI },
+    ]);
+  }, [formRows.length]);
+
+  const removeFormRow = useCallback((id: string) => {
+    setFormRows((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((r) => r.id !== id);
+    });
+  }, []);
+
+  const updateFormRow = useCallback((id: string, field: keyof CustomTxRow, value: string) => {
+    setFormRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+    );
+    setClientValidationError(null);
+  }, []);
+
+  // Real-time JSON validation
+  const handleJsonChange = useCallback((text: string) => {
+    setRawJson(text);
+    if (!text.trim()) {
+      setJsonError(null);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) {
+        setJsonError('JSON must be an array of transaction objects: [{ "sender": "0x...", "recipient": "0x..." }]');
+        return;
+      }
+      if (parsed.length === 0) {
+        setJsonError('Array is empty. Please provide at least one transaction object.');
+        return;
+      }
+      for (let i = 0; i < parsed.length; i++) {
+        const item = parsed[i];
+        if (!item || typeof item !== 'object') {
+          setJsonError(`Item #${i + 1} must be an object with "sender" and "recipient" strings.`);
+          return;
+        }
+        if (!item.sender || typeof item.sender !== 'string') {
+          setJsonError(`Item #${i + 1} is missing a valid "sender" address.`);
+          return;
+        }
+        if (!item.recipient || typeof item.recipient !== 'string') {
+          setJsonError(`Item #${i + 1} is missing a valid "recipient" address.`);
+          return;
+        }
+      }
+      setJsonError(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Invalid JSON syntax';
+      setJsonError(`JSON Syntax Error: ${msg}`);
+    }
+  }, []);
+
+  // Submit custom transactions staggered one by one to /api/screen
+  const handleSubmitCustomTransactions = useCallback(async () => {
+    if (isSubmittingCustom) return;
+
+    const txListToSubmit: Array<{ tx_hash: string; sender: string; recipient: string; value?: string }> = [];
+
+    if (customInputMode === 'form') {
+      // Validate form rows
+      for (let i = 0; i < formRows.length; i++) {
+        const r = formRows[i];
+        const s = r.sender.trim();
+        const rec = r.recipient.trim();
+        if (!s) {
+          setClientValidationError(`Row #${i + 1}: Sender address is required.`);
+          return;
+        }
+        if (!isValidAddress(s)) {
+          setClientValidationError(`Row #${i + 1}: Sender address must start with '0x' followed by 40 hex characters.`);
+          return;
+        }
+        if (!rec) {
+          setClientValidationError(`Row #${i + 1}: Recipient address is required.`);
+          return;
+        }
+        if (!isValidAddress(rec)) {
+          setClientValidationError(`Row #${i + 1}: Recipient address must start with '0x' followed by 40 hex characters.`);
+          return;
+        }
+        txListToSubmit.push({
+          tx_hash: r.tx_hash?.trim() || generateRandomTxHash(),
+          sender: s,
+          recipient: rec,
+          value: r.value.trim() || DEFAULT_ETH_VALUE_WEI,
+        });
+      }
+    } else {
+      // Parse & validate JSON
+      if (!rawJson.trim()) {
+        setJsonError('Please enter or paste a JSON array of transactions.');
+        return;
+      }
+      try {
+        const parsed = JSON.parse(rawJson);
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          setJsonError('JSON must be a non-empty array of transaction objects.');
+          return;
+        }
+        for (let i = 0; i < parsed.length; i++) {
+          const item = parsed[i];
+          const s = item.sender ? String(item.sender).trim() : '';
+          const rec = item.recipient ? String(item.recipient).trim() : '';
+          if (!s || !isValidAddress(s)) {
+            setJsonError(`Item #${i + 1}: Invalid or missing sender address (must be 0x followed by 40 hex chars).`);
+            return;
+          }
+          if (!rec || !isValidAddress(rec)) {
+            setJsonError(`Item #${i + 1}: Invalid or missing recipient address (must be 0x followed by 40 hex chars).`);
+            return;
+          }
+          txListToSubmit.push({
+            tx_hash: item.tx_hash ? String(item.tx_hash).trim() : generateRandomTxHash(),
+            sender: s,
+            recipient: rec,
+            value: item.value ? String(item.value).trim() : DEFAULT_ETH_VALUE_WEI,
+          });
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Invalid JSON';
+        setJsonError(`JSON Syntax Error: ${msg}`);
+        return;
+      }
+    }
+
+    setClientValidationError(null);
+    setJsonError(null);
+    setIsSubmittingCustom(true);
+    setSubmissionSummary(null);
+    setSubmissionResults([]);
+    setSubmissionProgress({ current: 0, total: txListToSubmit.length });
+
+    playRetroBleep(440, 'sine', 0.15);
+
+    const results: SubmissionResultItem[] = [];
+    let allowCount = 0;
+    let flagCount = 0;
+    let blockCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < txListToSubmit.length; i++) {
+      const item = txListToSubmit[i];
+      setSubmissionProgress({ current: i + 1, total: txListToSubmit.length });
+
+      try {
+        const resp = await fetch('/api/screen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tx_hash: item.tx_hash,
+            sender: item.sender,
+            recipient: item.recipient,
+          }),
+        });
+
+        if (!resp.ok) {
+          const errJson = await resp.json().catch(() => ({}));
+          const errMsg = errJson.error || `HTTP ${resp.status}: Engine screening failed`;
+          results.push({
+            index: i + 1,
+            tx_hash: item.tx_hash,
+            sender: item.sender,
+            recipient: item.recipient,
+            error: errMsg,
+          });
+          failCount++;
+        } else {
+          const decisionData = await resp.json();
+          const decision = decisionData.decision as 'ALLOW' | 'FLAG' | 'BLOCK';
+          if (decision === 'ALLOW') allowCount++;
+          else if (decision === 'FLAG') flagCount++;
+          else if (decision === 'BLOCK') blockCount++;
+
+          results.push({
+            index: i + 1,
+            tx_hash: item.tx_hash,
+            sender: item.sender,
+            recipient: item.recipient,
+            decision,
+            risk_score: decisionData.risk_score,
+            reasons: decisionData.reasons || [],
+          });
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Network error';
+        results.push({
+          index: i + 1,
+          tx_hash: item.tx_hash,
+          sender: item.sender,
+          recipient: item.recipient,
+          error: msg,
+        });
+        failCount++;
+      }
+
+      setSubmissionResults([...results]);
+
+      // Stagger delay between submissions so each ball animates distinctly through arena
+      if (i < txListToSubmit.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, SUBMISSION_STAGGER_MS));
+      }
+    }
+
+    setIsSubmittingCustom(false);
+    setSubmissionProgress(null);
+
+    // Play completion sound
+    playRetroBleep(659.25, 'triangle', 0.25);
+
+    // Set inline summary string
+    const total = txListToSubmit.length;
+    if (failCount === 0) {
+      setSubmissionSummary(`${total} submitted — ${allowCount} ALLOW, ${flagCount} FLAG, ${blockCount} BLOCK`);
+    } else {
+      setSubmissionSummary(
+        `${total} submitted — ${total - failCount} processed (${allowCount} ALLOW, ${flagCount} FLAG, ${blockCount} BLOCK), ${failCount} failed`
+      );
+    }
+  }, [
+    customInputMode,
+    formRows,
+    generateRandomTxHash,
+    isSubmittingCustom,
+    isValidAddress,
+    playRetroBleep,
+    rawJson,
+  ]);
+
   // Handle user guess & execute racket swing animation
   const handleGuess = useCallback(
     (guess: 'ALLOW' | 'FLAG' | 'BLOCK') => {
@@ -1233,6 +1567,22 @@ export default function ArcadePage() {
 
           {/* Action Selectors and Buttons */}
           <div className="flex items-center flex-wrap gap-2.5 ml-auto">
+            {/* Custom Transactions Submission Trigger Button */}
+            <button
+              onClick={() => setIsCustomPanelOpen((prev) => !prev)}
+              className={`btn-3d ${
+                isCustomPanelOpen
+                  ? 'btn-3d-amber ring-2 ring-[#F8B436]'
+                  : 'bg-[#FFF8EE] text-[#692E19] border-[#8F4C30] hover:bg-[#FFF2DF]'
+              } font-bold text-xs md:text-sm px-3.5 py-2 rounded-2xl flex items-center gap-1.5 tracking-wider cursor-pointer hover:scale-[1.02] active:scale-95 transition-all shadow-sm`}
+              id="btn-custom-txs"
+              title="Toggle Custom Transaction Submission Panel for Live Demos"
+            >
+              <span className="text-xs">⚡</span>
+              <span>CUSTOM TXS</span>
+              <span className="text-[10px] opacity-75 font-mono">{isCustomPanelOpen ? '▲' : '▼'}</span>
+            </button>
+
             {/* Run Live Demo Arcade Button */}
             <button
               onClick={triggerLiveDemo}
@@ -1273,6 +1623,325 @@ export default function ArcadePage() {
             </div>
           </div>
         </section>
+
+        {/* Custom Transaction Submission Panel (Collapsible) */}
+        {isCustomPanelOpen && (
+          <section className="tactile-card bg-[#FBF1E2] rounded-3xl p-4 sm:p-5 flex flex-col gap-4 border-[3.5px] border-[#8F4C30] animate-in fade-in slide-in-from-top-3 duration-200">
+            {/* Panel Header */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b-2 border-[#ECD0B3]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#F8B436] border-2 border-[#8F4C30] flex items-center justify-center text-base shadow-[2px_2px_0_#6B341E]">
+                  ⚡
+                </div>
+                <div>
+                  <h3 className="font-black text-sm sm:text-base text-[#5C2B1A]">
+                    Submit Custom Transactions for Live Demo
+                  </h3>
+                  <p className="text-xs text-[#8F4C30] font-bold">
+                    Inject arbitrary transactions through the engine and watch each animate across the arena
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center flex-wrap gap-2">
+                {/* Quick-Fill Example Button */}
+                <button
+                  onClick={loadExampleTransactions}
+                  className="bg-[#FFF8EE] hover:bg-[#FFF0DF] border-2 border-[#8F4C30] text-[#692E19] px-3 py-1.5 rounded-xl font-black text-xs cursor-pointer shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
+                  title="Pre-fill form with standard ALLOW / FLAG / BLOCK demo transactions"
+                  id="btn-load-example"
+                >
+                  <span>✨</span>
+                  <span>Load Example: ALLOW / FLAG / BLOCK</span>
+                </button>
+
+                {/* Input Mode Toggle Pill */}
+                <div className="bg-[#ECD0B3] p-1 rounded-xl border-2 border-[#8F4C30] flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      setCustomInputMode('form');
+                      setClientValidationError(null);
+                      setJsonError(null);
+                    }}
+                    className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
+                      customInputMode === 'form'
+                        ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
+                        : 'text-[#7F4932] hover:bg-[#E3C3A0]'
+                    }`}
+                  >
+                    📋 Quick-Add Form
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCustomInputMode('json');
+                      setClientValidationError(null);
+                      if (!rawJson.trim() && formRows.length > 0) {
+                        setRawJson(
+                          JSON.stringify(
+                            formRows.map(({ sender, recipient, value }) => ({
+                              sender: sender || '0x...',
+                              recipient: recipient || '0x...',
+                              value: value || DEFAULT_ETH_VALUE_WEI,
+                            })),
+                            null,
+                            2
+                          )
+                        );
+                      }
+                    }}
+                    className={`px-3 py-1 rounded-lg font-black text-xs transition-all cursor-pointer ${
+                      customInputMode === 'json'
+                        ? 'bg-[#E87552] text-white border border-[#7D3219] shadow-sm'
+                        : 'text-[#7F4932] hover:bg-[#E3C3A0]'
+                    }`}
+                  >
+                    {'{ }'} Raw JSON
+                  </button>
+                </div>
+
+                {/* Close Panel Button */}
+                <button
+                  onClick={() => setIsCustomPanelOpen(false)}
+                  className="p-1.5 rounded-xl border-2 border-[#8F4C30] bg-[#FFF2DE] hover:bg-[#FFE8CF] text-[#692E19] font-bold text-xs cursor-pointer hover:scale-105 active:scale-95 transition-all"
+                  title="Close panel"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Mode 1: Quick-Add Form */}
+            {customInputMode === 'form' && (
+              <div className="flex flex-col gap-3">
+                {/* Column Headers */}
+                <div className="hidden sm:grid sm:grid-cols-12 gap-2 text-[11px] font-black uppercase tracking-wider text-[#8F4C30] px-1">
+                  <div className="col-span-1">#</div>
+                  <div className="col-span-5">Sender Address (0x...)</div>
+                  <div className="col-span-4">Recipient Address (0x...)</div>
+                  <div className="col-span-2">Value (Wei)</div>
+                </div>
+
+                {/* Rows Container (Scrolls cleanly after 5-6 rows up to 10) */}
+                <div className="max-h-[320px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                  {formRows.map((row, idx) => (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center bg-[#FFF8EE] p-2.5 rounded-2xl border-2 border-[#ECD0B3] hover:border-[#8F4C30] transition-colors"
+                    >
+                      {/* Row Index */}
+                      <div className="col-span-1 flex items-center gap-1">
+                        <span className="w-6 h-6 rounded-lg bg-[#ECD0B3] font-mono font-black text-xs text-[#6A2F1B] flex items-center justify-center">
+                          {idx + 1}
+                        </span>
+                      </div>
+
+                      {/* Sender Input */}
+                      <div className="col-span-5">
+                        <input
+                          type="text"
+                          value={row.sender}
+                          onChange={(e) => updateFormRow(row.id, 'sender', e.target.value)}
+                          placeholder="0x... (Sender EOA)"
+                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                        />
+                      </div>
+
+                      {/* Recipient Input */}
+                      <div className="col-span-4">
+                        <input
+                          type="text"
+                          value={row.recipient}
+                          onChange={(e) => updateFormRow(row.id, 'recipient', e.target.value)}
+                          placeholder="0x... (Recipient / Contract)"
+                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-3 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                        />
+                      </div>
+
+                      {/* Value Input + Remove Button */}
+                      <div className="col-span-2 flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={row.value}
+                          onChange={(e) => updateFormRow(row.id, 'value', e.target.value)}
+                          placeholder="1000000000000000000"
+                          className="w-full font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-xl px-2 py-1.5 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78]"
+                        />
+                        <button
+                          onClick={() => removeFormRow(row.id)}
+                          disabled={formRows.length <= 1}
+                          className={`w-7 h-7 shrink-0 rounded-xl border-2 border-[#8F4C30] flex items-center justify-center text-xs font-bold transition-all ${
+                            formRows.length <= 1
+                              ? 'opacity-30 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                              : 'bg-[#FFF2DE] hover:bg-[#FED7D7] text-[#9B2C2C] hover:border-[#E53E3E] cursor-pointer active:scale-90'
+                          }`}
+                          title={formRows.length <= 1 ? 'Minimum 1 transaction required' : 'Remove row'}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Form Bottom Controls */}
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    onClick={addFormRow}
+                    disabled={formRows.length >= 10}
+                    className={`px-3 py-1.5 rounded-xl border-2 border-dashed border-[#8F4C30] font-bold text-xs flex items-center gap-1.5 transition-all ${
+                      formRows.length >= 10
+                        ? 'opacity-40 cursor-not-allowed bg-[#ECD0B3] text-[#8F4C30]'
+                        : 'bg-[#FFF8EE] hover:bg-[#FFF2DF] text-[#7A3F29] cursor-pointer hover:scale-[1.02] active:scale-95'
+                    }`}
+                  >
+                    <span>＋</span>
+                    <span>Add Another Transaction ({formRows.length}/10)</span>
+                  </button>
+
+                  <span className="text-[11px] text-[#8F4C30] font-bold">
+                    Values in wei (1 ETH = 10^18 wei)
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Mode 2: Raw JSON Paste */}
+            {customInputMode === 'json' && (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between text-xs text-[#8F4C30] font-bold">
+                  <span>Paste JSON array of transactions:</span>
+                  <span className="font-mono text-[11px] text-[#A0644B]">
+                    [&#123; &quot;sender&quot;: &quot;0x...&quot;, &quot;recipient&quot;: &quot;0x...&quot;, &quot;value&quot;?: &quot;...&quot; &#125;]
+                  </span>
+                </div>
+                <textarea
+                  value={rawJson}
+                  onChange={(e) => handleJsonChange(e.target.value)}
+                  placeholder={`[\n  {\n    "sender": "0x1111111111111111111111111111111111111111",\n    "recipient": "0x2222222222222222222222222222222222222222",\n    "value": "1000000000000000000"\n  }\n]`}
+                  className="w-full h-44 font-mono text-xs bg-[#FFFDF9] border-2 border-[#8F4C30] rounded-2xl p-3 text-[#5C2B1A] placeholder:text-[#B38C75] focus:outline-none focus:border-[#48BB78] resize-y"
+                />
+              </div>
+            )}
+
+            {/* Inline Validation Errors */}
+            {clientValidationError && (
+              <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
+                <span>⚠</span>
+                <span>{clientValidationError}</span>
+              </div>
+            )}
+
+            {jsonError && (
+              <div className="p-3 bg-[#FFF0F0] border-2 border-[#E53E3E] rounded-xl flex items-center gap-2 text-xs font-bold text-[#9B2C2C] animate-in fade-in">
+                <span>✕</span>
+                <span>{jsonError}</span>
+              </div>
+            )}
+
+            {/* Panel Footer: Submit Action & Stagger Telemetry */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#ECD0B3]">
+              <div className="flex items-center flex-wrap gap-2.5">
+                {/* Submit All Button */}
+                <button
+                  onClick={handleSubmitCustomTransactions}
+                  disabled={isSubmittingCustom || Boolean(jsonError)}
+                  className={`btn-3d btn-3d-green font-black text-xs sm:text-sm px-5 py-2.5 rounded-2xl flex items-center gap-2 tracking-wider cursor-pointer ${
+                    isSubmittingCustom || Boolean(jsonError) ? 'opacity-60 cursor-not-allowed' : ''
+                  }`}
+                  id="btn-submit-custom-txs"
+                >
+                  <span className="text-sm">{isSubmittingCustom ? '⏳' : '▶'}</span>
+                  <span>
+                    {isSubmittingCustom
+                      ? `SCREENING (${submissionProgress?.current}/${submissionProgress?.total})...`
+                      : `SUBMIT ALL (${customInputMode === 'form' ? formRows.length : 'JSON'})`}
+                  </span>
+                </button>
+
+                {/* Inline Summary Badge */}
+                {submissionSummary && (
+                  <span className="text-xs font-mono font-black text-[#235839] bg-[#DEF4E6] px-3.5 py-2 rounded-xl border border-[#7DD89F] shadow-sm animate-in fade-in">
+                    ✓ {submissionSummary}
+                  </span>
+                )}
+              </div>
+
+              <div className="text-[11px] font-mono font-bold text-[#8F4C30] flex items-center gap-1.5 bg-[#FFF2DE] px-3 py-1.5 rounded-xl border border-[#ECD0B3]">
+                <span>⚡</span>
+                <span>400ms stagger between dispatches for distinct arena animations</span>
+              </div>
+            </div>
+
+            {/* Real-time Submission Results Cards */}
+            {submissionResults.length > 0 && (
+              <div className="mt-1 space-y-2 pt-2 border-t border-[#ECD0B3]">
+                <div className="flex items-center justify-between text-xs font-black text-[#692E19]">
+                  <span>DISPATCH AUDIT LOG ({submissionResults.length}):</span>
+                  <button
+                    onClick={() => setSubmissionResults([])}
+                    className="text-[10px] text-[#8F4C30] hover:text-[#5C2B1A] underline cursor-pointer"
+                  >
+                    Clear Results
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                  {submissionResults.map((res) => (
+                    <div
+                      key={res.index}
+                      className="p-2.5 rounded-xl bg-white border-2 border-[#ECD0B3] shadow-sm flex flex-col justify-between gap-1.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-[#8F4C30]">Tx #{res.index}</span>
+                        {res.decision ? (
+                          <span
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-black uppercase ${
+                              res.decision === 'ALLOW'
+                                ? 'bg-[#DEF4E6] text-[#235839] border border-[#7DD89F]'
+                                : res.decision === 'FLAG'
+                                ? 'bg-[#FEF6E4] text-[#8C5D17] border border-[#F6CB63]'
+                                : 'bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]'
+                            }`}
+                          >
+                            {res.decision} (Risk: {res.risk_score})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-black uppercase bg-[#FED7D7] text-[#9B2C2C] border border-[#E53E3E]">
+                            FAILED
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[10px] text-[#5C2B1A] truncate" title={res.tx_hash}>
+                        Hash: {shortAddr(res.tx_hash)}
+                      </div>
+                      <div className="font-mono text-[10px] text-[#7A3F29] truncate">
+                        {shortAddr(res.sender)} → {shortAddr(res.recipient)}
+                      </div>
+                      {res.error ? (
+                        <div className="text-[10px] text-red-600 font-bold bg-red-50 p-1 rounded">
+                          {res.error}
+                        </div>
+                      ) : (
+                        res.reasons &&
+                        res.reasons.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {res.reasons.map((reason, rIdx) => (
+                              <span
+                                key={rIdx}
+                                className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#FFF2DE] border border-[#ECD0B3] text-[#7A3F29]"
+                              >
+                                {reason}
+                              </span>
+                            ))}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Guess Verdict Bar (Stitch Cozy Layout) */}
         <section className="tactile-card bg-[#FFF6EB] rounded-3xl p-3 md:p-4 flex flex-wrap items-center justify-between gap-4 relative">
