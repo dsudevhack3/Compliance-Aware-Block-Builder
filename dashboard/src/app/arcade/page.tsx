@@ -99,7 +99,7 @@ const EXAMPLE_RELAY_BIDS: BuilderBidInput[] = [
     id: 'bid_a_clean',
     builder_id: 'Builder A (Compliant)',
     bid_value_eth: '2.0',
-    fee_recipient: '0x0330070fd38ec3bb94f58fa55d40368271e9e54a', // clean address from seed_addresses.sql
+    fee_recipient: '0x90f79bf6eb2c4f870365e785982e1f101e93b906', // clean fee recipient
     txs: [
       {
         id: 'tx_a_1',
@@ -113,7 +113,7 @@ const EXAMPLE_RELAY_BIDS: BuilderBidInput[] = [
     id: 'bid_b_sanctioned_tx',
     builder_id: 'Builder B (Sanctioned Tx, 2.5 ETH)',
     bid_value_eth: '2.5',
-    fee_recipient: '0x038989cbb1710c72b9920dc4fa529158f463e72c', // clean address from seed_addresses.sql
+    fee_recipient: '0x90f79bf6eb2c4f870365e785982e1f101e93b906', // clean fee recipient
     txs: [
       {
         id: 'tx_b_1',
@@ -1058,7 +1058,7 @@ export default function ArcadePage() {
         id: `bid_a_${Date.now()}`,
         builder_id: 'Builder A (Compliant)',
         bid_value_eth: '2.0',
-        fee_recipient: '0x0330070fd38ec3bb94f58fa55d40368271e9e54a',
+        fee_recipient: '0x90f79bf6eb2c4f870365e785982e1f101e93b906',
         txs: [
           {
             id: `tx_a_${Date.now()}_1`,
@@ -1072,7 +1072,7 @@ export default function ArcadePage() {
         id: `bid_b_${Date.now() + 1}`,
         builder_id: 'Builder B (Sanctioned Tx, 2.5 ETH)',
         bid_value_eth: '2.5',
-        fee_recipient: '0x038989cbb1710c72b9920dc4fa529158f463e72c',
+        fee_recipient: '0x90f79bf6eb2c4f870365e785982e1f101e93b906',
         txs: [
           {
             id: `tx_b_${Date.now() + 1}_1`,

@@ -1,0 +1,77 @@
+services:
+  - type: web
+    name: compliance-engine
+    runtime: docker
+    dockerfilePath: ./engine/Dockerfile
+    dockerContext: ./engine
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: compliance-redis
+          type: redis
+          property: connectionString
+      - key: PORT
+        value: 3001
+
+  - type: web
+    name: compliance-relay
+    runtime: docker
+    dockerfilePath: ./relay/Dockerfile
+    dockerContext: ./relay
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: compliance-redis
+          type: redis
+          property: connectionString
+      - key: ENGINE_URL
+        fromService:
+          name: compliance-engine
+          type: web
+          property: host
+      - key: PORT
+        value: 3003
+
+  - type: web
+    name: compliance-api
+    runtime: node
+    buildCommand: cd api && npm install && npm run build
+    startCommand: cd api && node dist/server.js
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: compliance-redis
+          type: redis
+          property: connectionString
+      - key: ENGINE_URL
+        fromService:
+          name: compliance-engine
+          type: web
+          property: host
+      - key: RELAY_URL
+        fromService:
+          name: compliance-relay
+          type: web
+          property: host
+
+  - type: web
+    name: compliance-ai-explainer
+    runtime: python
+    buildCommand: cd ai-explainer && pip install -r requirements.txt
+    startCommand: cd ai-explainer && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+  - type: redis
+    name: compliance-redis
+    plan: free
+    ipAllowList: []

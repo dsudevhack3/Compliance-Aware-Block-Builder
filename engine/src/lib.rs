@@ -1367,6 +1367,7 @@ mod tests {
             bundle_id: None,
             value_usd: None,
             vasp_metadata: None,
+            identity_verified: None,
         };
 
         let res = evaluate_transaction(&mock, &req).await.unwrap();
