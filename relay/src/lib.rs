@@ -165,6 +165,7 @@ pub fn create_relay_app(state: Arc<RelayState>) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/", get(health_handler))
         .route("/health", get(health_handler))
         .route("/relay/submit_bid", post(submit_bid_handler))
         .route("/relay/bids", get(list_bids_handler))
@@ -306,7 +307,6 @@ async fn run_bid_audit(state: Arc<RelayState>, bid_id: String, bid: Bid) {
             bundle_id: tx.bundle_id.clone(),
             value_usd: tx.value_usd,
             vasp_metadata: tx.vasp_metadata.clone(),
-            identity_verified: None,
         })
         .collect();
 

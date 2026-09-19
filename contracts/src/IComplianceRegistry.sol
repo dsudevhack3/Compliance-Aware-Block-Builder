@@ -13,8 +13,11 @@ interface IComplianceRegistry {
     event VerificationRequested(bytes32 indexed requestId, address indexed applicant, string provider);
     event VerificationFulfilled(bytes32 indexed requestId, address indexed applicant, bool isEligible, string provider);
     event EligibilityUpdated(address indexed account, bool isEligible, string reason);
+    event EligibilityRevoked(address indexed account, string reason);
 
     function isEligible(address account) external view returns (bool);
     function getIdentityRecord(address account) external view returns (IdentityRecord memory);
     function requestVerification(address applicant, string calldata provider) external returns (bytes32 requestId);
+    function revoke(address account, string calldata reason) external;
+    function isSupportedProvider(string calldata provider) external view returns (bool);
 }
