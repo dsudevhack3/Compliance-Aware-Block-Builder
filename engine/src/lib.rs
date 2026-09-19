@@ -345,7 +345,10 @@ pub trait ComplianceDataProvider: Send + Sync {
         Ok(0)
     }
 
-    async fn check_identity_eligibility(&self, _address: &str) -> Result<Option<bool>, EngineError> {
+    async fn check_identity_eligibility(
+        &self,
+        _address: &str,
+    ) -> Result<Option<bool>, EngineError> {
         Ok(None)
     }
 }
@@ -863,12 +866,11 @@ impl ComplianceDataProvider for LiveComplianceBackend {
         let redis_key = format!("kyc:eligibility:{}", address_lower);
 
         // 1. Check Redis hot cache
-        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
-            if let Ok(cached) = conn.get::<_, Option<String>>(&redis_key).await {
-                if let Some(val) = cached {
-                    return Ok(Some(val == "1" || val.eq_ignore_ascii_case("true")));
-                }
-            }
+        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await
+            && let Ok(cached) = conn.get::<_, Option<String>>(&redis_key).await
+            && let Some(val) = cached
+        {
+            return Ok(Some(val == "1" || val.eq_ignore_ascii_case("true")));
         }
 
         // 2. Query Postgres identity_verifications
@@ -889,7 +891,9 @@ impl ComplianceDataProvider for LiveComplianceBackend {
 
             // Cache in Redis for fast O(1) screening on subsequent blocks
             if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
-                let _: Result<(), _> = conn.set_ex(&redis_key, if active { "1" } else { "0" }, 3600).await;
+                let _: Result<(), _> = conn
+                    .set_ex(&redis_key, if active { "1" } else { "0" }, 3600)
+                    .await;
             }
             return Ok(Some(active));
         }
@@ -1425,7 +1429,6 @@ mod tests {
             bundle_id: None,
             value_usd: None,
             vasp_metadata: None,
-            identity_verified: None,
         };
 
         let res = evaluate_transaction(&mock, &req).await.unwrap();
@@ -1486,7 +1489,8 @@ mod tests {
 
         // Now test unverified sender
         let unverified_sender = "0x3333333333333333333333333333333333333333";
-        let mock_unverified = MockComplianceBackend::new().with_identity_eligibility(unverified_sender, false);
+        let mock_unverified =
+            MockComplianceBackend::new().with_identity_eligibility(unverified_sender, false);
 
         let req_unverified = ScreenRequest {
             tx_hash: "0xkyc_test_02".to_string(),
@@ -1499,7 +1503,14 @@ mod tests {
             vasp_metadata: None,
         };
 
-        let res_unverified = evaluate_transaction(&mock_unverified, &req_unverified).await.unwrap();
-        assert!(res_unverified.reasons.iter().any(|r| r == "UNVERIFIED_SENDER_REVERT_RISK"));
+        let res_unverified = evaluate_transaction(&mock_unverified, &req_unverified)
+            .await
+            .unwrap();
+        assert!(
+            res_unverified
+                .reasons
+                .iter()
+                .any(|r| r == "UNVERIFIED_SENDER_REVERT_RISK")
+        );
     }
 }
