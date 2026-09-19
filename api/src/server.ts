@@ -1072,6 +1072,111 @@ setInterval(async () => {
     }
 }, 500);
 
+// --- Chainlink Functions On-Chain Identity Registry Simulation & Cache ---
+interface IdentityVerificationRecord {
+    applicant: string;
+    isEligible: boolean;
+    nationalityCountryCode: number;
+    provider: 'POLYGON_ID' | 'WORLD_ID' | 'EXCHANGE_KYC';
+    verifiedAt: number;
+    expiresAt: number;
+    requestId: string;
+}
+
+const identityRegistry = new Map<string, IdentityVerificationRecord>();
+
+// Pre-seed known demo wallets
+identityRegistry.set('0x28c6c06298d514db089934071355e5743bf21d60'.toLowerCase(), {
+    applicant: '0x28c6c06298d514db089934071355e5743bf21d60',
+    isEligible: true,
+    nationalityCountryCode: 840,
+    provider: 'EXCHANGE_KYC',
+    verifiedAt: Date.now() - 3600_000,
+    expiresAt: Date.now() + 365 * 86400_000,
+    requestId: '0x' + crypto.randomBytes(32).toString('hex'),
+});
+
+fastify.get('/api/compliance/identity/:address', async (request, reply) => {
+    const { address } = request.params as { address: string };
+    if (!address || !address.startsWith('0x')) {
+        reply.status(400);
+        return { error: 'Invalid Ethereum address format' };
+    }
+    const record = identityRegistry.get(address.toLowerCase());
+    if (!record) {
+        return {
+            applicant: address,
+            isEligible: false,
+            nationalityCountryCode: 0,
+            provider: 'NONE',
+            verifiedAt: null,
+            expiresAt: null,
+        };
+    }
+    return record;
+});
+
+fastify.post('/api/compliance/identity/verify', async (request, reply) => {
+    const body = request.body as {
+        applicant?: string;
+        provider?: 'POLYGON_ID' | 'WORLD_ID' | 'EXCHANGE_KYC';
+        credentialProof?: string;
+    };
+
+    if (!body || !body.applicant || !body.applicant.startsWith('0x')) {
+        reply.status(400);
+        return { error: 'Valid applicant address starting with 0x is required' };
+    }
+
+    const provider = body.provider || 'EXCHANGE_KYC';
+    let isEligible = false;
+    let nationalityCode = 0;
+
+    if (provider === 'POLYGON_ID') {
+        isEligible = true;
+        nationalityCode = 840; // US / compliant jurisdiction
+    } else if (provider === 'WORLD_ID') {
+        isEligible = true;
+        nationalityCode = 0; // Unique personhood
+    } else if (provider === 'EXCHANGE_KYC') {
+        const lastChar = body.applicant.slice(-1).toLowerCase();
+        isEligible = ['0', '2', '4', '6', '8', 'a', 'c', 'e'].includes(lastChar);
+        nationalityCode = isEligible ? 840 : 0;
+    }
+
+    const now = Date.now();
+    const expiresAt = isEligible ? now + 365 * 86400_000 : 0;
+    const requestId = '0x' + crypto.randomBytes(32).toString('hex');
+
+    const record: IdentityVerificationRecord = {
+        applicant: body.applicant,
+        isEligible,
+        nationalityCountryCode: nationalityCode,
+        provider,
+        verifiedAt: now,
+        expiresAt,
+        requestId,
+    };
+
+    identityRegistry.set(body.applicant.toLowerCase(), record);
+
+    broadcast({
+        type: 'identity_updated',
+        data: record,
+    });
+
+    return {
+        success: true,
+        record,
+        chainlinkStep: {
+            step1_offchain: `Applicant credentials verified via ${provider}`,
+            step2_don_query: `Chainlink DON query dispatched (requestId: ${requestId})`,
+            step3_fulfilled: `DON consensus reached; isEligible[${body.applicant.slice(0, 10)}...] written to storage`,
+            step4_enforced: isEligible ? 'require(isEligible) will PASS' : 'require(isEligible) will REVERT',
+        },
+    };
+});
+
 const port = Number(process.env.PORT) || 3002;
 const host = process.env.HOST || '127.0.0.1';
 

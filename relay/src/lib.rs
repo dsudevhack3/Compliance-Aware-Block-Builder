@@ -306,6 +306,7 @@ async fn run_bid_audit(state: Arc<RelayState>, bid_id: String, bid: Bid) {
             bundle_id: tx.bundle_id.clone(),
             value_usd: tx.value_usd,
             vasp_metadata: tx.vasp_metadata.clone(),
+            identity_verified: None,
         })
         .collect();
 

@@ -263,7 +263,13 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [selected, setSelected] = useState<Decision | null>(DEFAULT_SAMPLE_DECISIONS[0]);
-  const [activeTab, setActiveTab] = useState<'mempool' | 'blocks' | 'lineage' | 'auction'>('mempool');
+  const [activeTab, setActiveTab] = useState<'mempool' | 'blocks' | 'lineage' | 'auction' | 'identity'>('mempool');
+  const [identityApplicant, setIdentityApplicant] = useState('0x9999999999999999999999999999999999999999');
+  const [identityProvider, setIdentityProvider] = useState<'POLYGON_ID' | 'WORLD_ID' | 'EXCHANGE_KYC'>('POLYGON_ID');
+  const [identityResult, setIdentityResult] = useState<any>(null);
+  const [isVerifyingIdentity, setIsVerifyingIdentity] = useState(false);
+  const [gatedCallStatus, setGatedCallStatus] = useState<'IDLE' | 'REVERTED' | 'SUCCESS'>('IDLE');
+  const [gatedCallLog, setGatedCallLog] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ALLOW' | 'FLAG' | 'BLOCK'>('ALL');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -868,6 +874,18 @@ export default function Dashboard() {
               <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] bg-[#1D5E38] text-white font-mono font-bold">
                 Slot {selectedSlot}
               </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('identity')}
+              className={`px-4 py-2 rounded-2xl font-black text-xs md:text-sm flex items-center gap-1.5 tracking-wide transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'identity'
+                  ? 'btn-3d bg-[#9333EA] border-2 border-[#581C87] text-white shadow-md'
+                  : 'bg-[#ECD0B3] border-2 border-[#8F4C30] text-[#692E19] hover:bg-[#E3C3A0]'
+              }`}
+            >
+              <span>🪪</span>
+              <span>Chainlink KYC Verifier</span>
             </button>
 
             <button
@@ -1987,6 +2005,273 @@ export default function Dashboard() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Section 6.5: Chainlink Functions On-Chain Identity & Compliance Gating (Active Tab: identity) */}
+        {activeTab === 'identity' && (
+          <section className="tactile-card bg-[#FFFDF9] rounded-3xl p-5 md:p-6 border-[3.5px] border-[#8F4C30] flex flex-col gap-6 shadow-md">
+            <div className="flex flex-wrap items-center justify-between pb-4 border-b-2 border-[#E7CDAF] gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-[#F3E8FF] border-2 border-[#7E22CE] flex items-center justify-center text-2xl shadow-sm">
+                  🪪
+                </div>
+                <div>
+                  <h3 className="text-lg md:text-xl font-black text-[#581C87] uppercase flex items-center gap-2">
+                    <span>Decentralized Identity &amp; Chainlink Functions Gate</span>
+                    <span className="text-[10px] bg-[#9333EA] text-white px-2 py-0.5 rounded-full font-mono">
+                      EVM REVERT ENFORCEMENT
+                    </span>
+                  </h3>
+                  <p className="text-xs font-bold text-[#7E22CE]">
+                    Step 1 (Off-Chain KYC) &rarr; Step 2 (Chainlink Functions DON) &rarr; Step 3 (On-Chain Storage) &rarr; Step 4 (Smart Contract require)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setIdentityApplicant('0x28c6c06298d514db089934071355e5743bf21d60');
+                    setIdentityProvider('EXCHANGE_KYC');
+                  }}
+                  className="px-2.5 py-1 bg-[#F5E8FF] border border-[#A855F7] text-[#6B21A8] hover:bg-[#E9D5FF] text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Load Regulated Exchange (Binance)
+                </button>
+                <button
+                  onClick={() => {
+                    setIdentityApplicant('0x9999999999999999999999999999999999999999');
+                    setIdentityProvider('POLYGON_ID');
+                  }}
+                  className="px-2.5 py-1 bg-[#FFF1F2] border border-[#F43F5E] text-[#BE123C] hover:bg-[#FFE4E6] text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Load Unverified Applicant
+                </button>
+              </div>
+            </div>
+
+            {/* 4-Step Visual Lifecycle Workflow */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Step 1: Off-Chain Verification */}
+              <div className="tactile-card-sm bg-[#FAF5FF] border-2 border-[#C084FC] rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between pb-2 border-b border-[#E9D5FF]">
+                    <span className="text-[11px] font-black uppercase text-[#6B21A8] flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-[#9333EA] text-white flex items-center justify-center text-[10px]">1</span>
+                      Off-Chain KYC
+                    </span>
+                    <span className="text-[10px] font-bold text-[#7E22CE]">Verified Once</span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs font-semibold text-[#581C87]">
+                    <p className="text-[11px]">Select proof provider:</p>
+                    <div className="space-y-1.5">
+                      <label className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-[#F3E8FF] cursor-pointer">
+                        <input
+                          type="radio"
+                          name="provider"
+                          checked={identityProvider === 'POLYGON_ID'}
+                          onChange={() => setIdentityProvider('POLYGON_ID')}
+                          className="accent-[#9333EA]"
+                        />
+                        <span className="text-[11px]">🟣 <strong>Polygon ID</strong> (Passport ZK)</span>
+                      </label>
+                      <label className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-[#F3E8FF] cursor-pointer">
+                        <input
+                          type="radio"
+                          name="provider"
+                          checked={identityProvider === 'WORLD_ID'}
+                          onChange={() => setIdentityProvider('WORLD_ID')}
+                          className="accent-[#9333EA]"
+                        />
+                        <span className="text-[11px]">🌐 <strong>World ID</strong> (Iris Personhood)</span>
+                      </label>
+                      <label className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-[#F3E8FF] cursor-pointer">
+                        <input
+                          type="radio"
+                          name="provider"
+                          checked={identityProvider === 'EXCHANGE_KYC'}
+                          onChange={() => setIdentityProvider('EXCHANGE_KYC')}
+                          className="accent-[#9333EA]"
+                        />
+                        <span className="text-[11px]">🏦 <strong>Exchange KYC</strong> (Tier-2 Partner)</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div className="text-[10px] text-[#7E22CE] bg-white p-2 rounded-lg border border-[#D8B4FE]">
+                  Off-chain identity anchor verified without exposing raw PII on-chain.
+                </div>
+              </div>
+
+              {/* Step 2: Chainlink Functions DON */}
+              <div className="tactile-card-sm bg-[#F0FDF4] border-2 border-[#86EFAC] rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between pb-2 border-b border-[#BBF7D0]">
+                    <span className="text-[11px] font-black uppercase text-[#15803D] flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-[#16A34A] text-white flex items-center justify-center text-[10px]">2</span>
+                      Chainlink Functions
+                    </span>
+                    <span className="text-[10px] font-bold text-[#16A34A]">Decentralized DON</span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs font-semibold text-[#14532D]">
+                    <p className="text-[11px]">Applicant Wallet:</p>
+                    <input
+                      type="text"
+                      value={identityApplicant}
+                      onChange={(e) => setIdentityApplicant(e.target.value)}
+                      className="w-full text-xs font-mono p-2 rounded-lg bg-white border border-[#86EFAC] focus:outline-none focus:border-[#16A34A] text-[#14532D]"
+                    />
+                    <button
+                      onClick={async () => {
+                        setIsVerifyingIdentity(true);
+                        setGatedCallStatus('IDLE');
+                        setGatedCallLog('');
+                        try {
+                          const res = await fetch(`${API_URL}/api/compliance/identity/verify`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              applicant: identityApplicant,
+                              provider: identityProvider,
+                              credentialProof: 'zk_proof_sig_valid'
+                            })
+                          });
+                          const data = await res.json();
+                          setIdentityResult(data);
+                        } catch (err: any) {
+                          setIdentityResult({ error: err.message });
+                        } finally {
+                          setIsVerifyingIdentity(false);
+                        }
+                      }}
+                      disabled={isVerifyingIdentity}
+                      className="w-full btn-3d bg-[#16A34A] hover:bg-[#15803D] text-white py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {isVerifyingIdentity ? 'Dispatched to DON...' : '⚡ Trigger Functions Verification'}
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[10px] text-[#15803D] bg-white p-2 rounded-lg border border-[#BBF7D0] font-mono">
+                  verifyIdentity.js executes in secure DON sandbox
+                </div>
+              </div>
+
+              {/* Step 3: On-Chain Storage */}
+              <div className="tactile-card-sm bg-[#EFF6FF] border-2 border-[#93C5FD] rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between pb-2 border-b border-[#BFDBFE]">
+                    <span className="text-[11px] font-black uppercase text-[#1D4ED8] flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-[#2563EB] text-white flex items-center justify-center text-[10px]">3</span>
+                      On-Chain Storage
+                    </span>
+                    <span className="text-[10px] font-bold text-[#2563EB]">fulfillRequest()</span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs font-semibold text-[#1E3A8A]">
+                    <div className="p-2 bg-white rounded-lg border border-[#93C5FD] space-y-1">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span>isEligible[wallet]:</span>
+                        <span
+                          className={`font-black font-mono px-2 py-0.5 rounded text-[10px] ${
+                            identityResult?.record?.isEligible
+                              ? 'bg-[#DCFCE7] text-[#166534] border border-[#86EFAC]'
+                              : 'bg-[#FEE2E2] text-[#991B1B] border border-[#FCA5A5]'
+                          }`}
+                        >
+                          {identityResult?.record?.isEligible ? 'TRUE' : 'FALSE'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span>Country Code:</span>
+                        <span className="font-mono text-[#1E3A8A]">
+                          {identityResult?.record?.nationalityCountryCode || (identityResult?.record?.isEligible ? '840 (US)' : 'None')}
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-[#60A5FA] truncate">
+                        ReqID: {identityResult?.record?.requestId ? `${identityResult.record.requestId.slice(0, 16)}...` : 'Pending dispatch'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="text-[10px] text-[#1E40AF] bg-white p-2 rounded-lg border border-[#BFDBFE]">
+                  ComplianceRegistry.sol stores cryptographic eligibility state.
+                </div>
+              </div>
+
+              {/* Step 4: Smart Contract require() */}
+              <div className="tactile-card-sm bg-[#FFF7ED] border-2 border-[#FDBA74] rounded-2xl p-4 flex flex-col justify-between gap-3 shadow-sm">
+                <div>
+                  <div className="flex items-center justify-between pb-2 border-b border-[#FED7AA]">
+                    <span className="text-[11px] font-black uppercase text-[#C2410C] flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-[#EA580C] text-white flex items-center justify-center text-[10px]">4</span>
+                      Contract require()
+                    </span>
+                    <span className="text-[10px] font-bold text-[#EA580C]">Gated Protocol</span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs font-semibold text-[#7C2D12]">
+                    <p className="text-[11px]">Test calling ComplianceGatedService:</p>
+                    <button
+                      onClick={() => {
+                        const isEligible = identityResult?.record?.isEligible;
+                        if (isEligible) {
+                          setGatedCallStatus('SUCCESS');
+                          setGatedCallLog(`✓ require(registry.isEligible(msg.sender)) PASSED! Protocol action executed by ${identityApplicant.slice(0, 10)}... (Gas preserved, block inclusion verified)`);
+                        } else {
+                          setGatedCallStatus('REVERTED');
+                          setGatedCallLog(`⛔ REVERT: "Not eligible: sender lacks verified compliance credential" at ComplianceGatedService.sol:34. Transaction refused by EVM.`);
+                        }
+                      }}
+                      className="w-full btn-3d bg-[#EA580C] hover:bg-[#C2410C] text-white py-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      🚀 Test Protected Contract Call
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[10px] text-[#9A3412] bg-white p-2 rounded-lg border border-[#FED7AA] font-mono">
+                  require(isEligible[msg.sender], &quot;Not eligible&quot;)
+                </div>
+              </div>
+            </div>
+
+            {/* Live Terminal & Trace Log */}
+            <div className="tactile-card bg-[#1E1B2E] text-white rounded-2xl p-4 font-mono text-xs space-y-2 border-2 border-[#4C1D95] shadow-inner">
+              <div className="flex items-center justify-between border-b border-[#3B2D54] pb-2">
+                <span className="text-purple-300 font-bold flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block animate-pulse" />
+                  Chainlink Functions &amp; Smart Contract Execution Trace
+                </span>
+                <span className="text-[11px] text-gray-400">Contracts: ComplianceRegistry.sol &bull; ComplianceGatedService.sol</span>
+              </div>
+
+              <div className="space-y-1.5 text-[11px]">
+                {identityResult?.chainlinkStep && (
+                  <div className="space-y-1">
+                    <p className="text-emerald-400 font-bold">[STEP 1 &amp; 2]: {identityResult.chainlinkStep.step1_offchain}</p>
+                    <p className="text-cyan-400 font-bold">[DON DISPATCH]: {identityResult.chainlinkStep.step2_don_query}</p>
+                    <p className="text-indigo-400 font-bold">[STEP 3 CALLBACK]: {identityResult.chainlinkStep.step3_fulfilled}</p>
+                    <p className="text-amber-300 font-bold">[STEP 4 POLICY]: {identityResult.chainlinkStep.step4_enforced}</p>
+                  </div>
+                )}
+
+                {gatedCallStatus === 'SUCCESS' && (
+                  <div className="p-2.5 bg-emerald-950/80 border border-emerald-500 rounded-xl text-emerald-300 font-bold animate-in fade-in">
+                    {gatedCallLog}
+                  </div>
+                )}
+
+                {gatedCallStatus === 'REVERTED' && (
+                  <div className="p-2.5 bg-rose-950/80 border border-rose-500 rounded-xl text-rose-300 font-bold animate-in fade-in">
+                    {gatedCallLog}
+                  </div>
+                )}
+
+                {!identityResult && gatedCallStatus === 'IDLE' && (
+                  <p className="text-gray-400 italic">
+                    Ready. Click &quot;Trigger Functions Verification&quot; to execute the Chainlink Oracle query and update on-chain eligibility.
+                  </p>
+                )}
               </div>
             </div>
           </section>
