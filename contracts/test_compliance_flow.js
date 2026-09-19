@@ -9,16 +9,16 @@ const assert = require('assert');
 
 console.log('=== Starting Compliance & Identity Verification Test Suite ===\n');
 
-// Load Chainlink Functions DON code
-const scriptPath = path.join(__dirname, 'scripts', 'functions', 'verifyIdentity.js');
+// Load Chainlink Functions DON code (DEMO fallback — production verifyIdentity.js needs live DON)
+const scriptPath = path.join(__dirname, 'scripts', 'functions', 'verifyIdentity.demo.js');
 const donCode = fs.readFileSync(scriptPath, 'utf8');
 const runDonScript = new Function('args', 'secrets', donCode);
 
-// Test 1: Polygon ID (ZK credential with proof)
+// Test 1: Polygon ID (hash-based pseudo-verifier — deterministic per wallet|provider|proof)
 console.log('[Test 1] Testing Polygon ID Verification (Step 1 & 2)...');
 {
   const wallet = '0x71C634C2447d5E0A41855985b6E633F530E780a2';
-  const args = [wallet, 'POLYGON_ID', 'zk_proof_kyc_valid'];
+  const args = [wallet, 'POLYGON_ID', 'zk_proof_sig_valid'];
   const secrets = { POLYGON_ID_RESOLVER_URL: 'https://staging.polygonid.com' };
   const bytes = runDonScript(args, secrets);
 
