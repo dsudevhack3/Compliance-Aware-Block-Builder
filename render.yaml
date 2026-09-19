@@ -3,8 +3,10 @@ services:
     name: compliance-engine
     runtime: docker
     dockerfilePath: ./engine/Dockerfile
-    dockerContext: ./engine
+    dockerContext: .
     envVars:
+      - key: HOST
+        value: 0.0.0.0
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -13,14 +15,16 @@ services:
           type: redis
           property: connectionString
       - key: PORT
-        value: 3001
+        value: 10000
 
   - type: web
     name: compliance-relay
     runtime: docker
     dockerfilePath: ./relay/Dockerfile
-    dockerContext: ./relay
+    dockerContext: .
     envVars:
+      - key: HOST
+        value: 0.0.0.0
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -34,7 +38,7 @@ services:
           type: web
           property: host
       - key: PORT
-        value: 3003
+        value: 10000
 
   - type: web
     name: compliance-api
@@ -42,6 +46,8 @@ services:
     buildCommand: cd api && npm install && npm run build
     startCommand: cd api && node dist/server.js
     envVars:
+      - key: HOST
+        value: 0.0.0.0
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL

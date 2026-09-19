@@ -57,7 +57,7 @@ async fn main() -> eyre::Result<()> {
 
     let app = create_app(backend);
 
-    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
     let bind_addr = format!("{}:{}", host, port);
 
